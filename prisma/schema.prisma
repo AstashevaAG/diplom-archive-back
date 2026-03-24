@@ -1,0 +1,198 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  GUEST
+  STUDENT
+  GRADUATE
+  SUPERVISOR
+  ADMIN
+}
+
+enum WorkStatus {
+  DRAFT
+  TOPIC_SELECTED
+  APPROVED
+  IN_PROGRESS
+  REVIEW
+  DEFENSE
+  PUBLISHED
+  ARCHIVED
+}
+
+enum FileType {
+  PDF
+  PRESENTATION
+  VIDEO
+  OTHER
+}
+
+enum TopicRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id             String    @id @default(uuid())
+  email          String    @unique
+  passwordHash   String
+  fullName       String
+  role           Role      @default(STUDENT)
+  group          String?
+  specialization String?
+  bio            String?
+  avatarUrl      String?
+  isBlocked      Boolean   @default(false)
+  failedLogins   Int       @default(0)
+  blockedUntil   DateTime?
+  refreshToken   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  worksAsAuthor     Work[]         @relation("WorkAuthor")
+  worksAsSupervisor Work[]         @relation("WorkSupervisor")
+  reviews           Review[]
+  comments          Comment[]
+  topicRequests     TopicRequest[] @relation("TopicStudent")
+  notifications     Notification[]
+
+  @@map("users")
+}
+
+model Work {
+  id           String     @id @default(uuid())
+  title        String
+  annotation   String?    @db.Text
+  fullText     String?    @db.Text
+  category     String?
+  tags         String[]
+  status       WorkStatus @default(DRAFT)
+  year         Int?
+  qualityScore Float?
+  viewCount    Int        @default(0)
+  isPublic     Boolean    @default(false)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  authorId     String
+  author       User       @relation("WorkAuthor", fields: [authorId], references: [id])
+  supervisorId String?
+  supervisor   User?      @relation("WorkSupervisor", fields: [supervisorId], references: [id])
+
+  files    File[]
+  reviews  Review[]
+  comments Comment[]
+  stages   WorkStage[]
+
+  @@map("works")
+}
+
+model File {
+  id           String   @id @default(uuid())
+  filename     String
+  originalName String
+  mimeType     String
+  size         Int
+  type         FileType
+  url          String
+  version      Int      @default(1)
+  createdAt    DateTime @default(now())
+
+  workId String
+  work   Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+
+  @@map("files")
+}
+
+model Review {
+  id          String  @id @default(uuid())
+  criteria    Json
+  weights     Json
+  totalScore  Float
+  comment     String? @db.Text
+  isFinalized Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  reviewerId String
+  reviewer   User   @relation(fields: [reviewerId], references: [id])
+  workId     String
+  work       Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+
+  @@map("reviews")
+}
+
+model Comment {
+  id        String   @id @default(uuid())
+  text      String   @db.Text
+  createdAt DateTime @default(now())
+
+  authorId String
+  author   User   @relation(fields: [authorId], references: [id])
+  workId   String
+  work     Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+
+  @@map("comments")
+}
+
+model TopicRequest {
+  id            String             @id @default(uuid())
+  proposedTopic String
+  justification String?            @db.Text
+  status        TopicRequestStatus @default(PENDING)
+  supervisorId  String
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  studentId String
+  student   User   @relation("TopicStudent", fields: [studentId], references: [id])
+
+  @@map("topic_requests")
+}
+
+model WorkStage {
+  id          String    @id @default(uuid())
+  name        String
+  deadline    DateTime?
+  isCompleted Boolean   @default(false)
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  workId String
+  work   Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+
+  @@map("work_stages")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  type      String
+  title     String
+  message   String
+  isRead    Boolean  @default(false)
+  data      Json?
+  createdAt DateTime @default(now())
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  @@map("notifications")
+}
+
+model ReviewCriteriaConfig {
+  id          String  @id @default(uuid())
+  name        String
+  description String?
+  weight      Float   @default(1.0)
+  maxScore    Int     @default(10)
+  isActive    Boolean @default(true)
+
+  @@map("review_criteria_config")
+}
