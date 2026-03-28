@@ -39,6 +39,19 @@ enum TopicRequestStatus {
   REJECTED
 }
 
+enum PortfolioItemType {
+  COURSEWORK
+  PERSONAL_PROJECT
+  RESEARCH_PAPER
+  OTHER
+}
+
+enum TopicResponseStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
 model User {
   id             String    @id @default(uuid())
   email          String    @unique
@@ -56,12 +69,18 @@ model User {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
-  worksAsAuthor     Work[]         @relation("WorkAuthor")
-  worksAsSupervisor Work[]         @relation("WorkSupervisor")
-  reviews           Review[]
-  comments          Comment[]
-  topicRequests     TopicRequest[] @relation("TopicStudent")
-  notifications     Notification[]
+  worksAsAuthor              Work[]                @relation("WorkAuthor")
+  worksAsSupervisor          Work[]                @relation("WorkSupervisor")
+  reviews                    Review[]
+  comments                   Comment[]
+  topicRequests              TopicRequest[]        @relation("TopicStudent")
+  topicRequestsAsSupervisor  TopicRequest[]        @relation("TopicSupervisor")
+  notifications              Notification[]
+  portfolioItems             StudentPortfolioItem[] @relation("StudentPortfolio")
+  workMessages               WorkMessage[]         @relation("WorkMessages")
+  supervisorTopics           SupervisorTopic[]     @relation("SupervisorTopics")
+  topicResponses             TopicResponse[]       @relation("StudentTopicResponses")
+  infoPosts                  InfoPost[]            @relation("InfoPostAuthor")
 
   @@map("users")
 }
@@ -90,6 +109,7 @@ model Work {
   reviews  Review[]
   comments Comment[]
   stages   WorkStage[]
+  messages WorkMessage[]
 
   @@map("works")
 }
@@ -146,13 +166,15 @@ model TopicRequest {
   id            String             @id @default(uuid())
   proposedTopic String
   justification String?            @db.Text
+  rejectReason  String?            @db.Text
   status        TopicRequestStatus @default(PENDING)
-  supervisorId  String
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
 
-  studentId String
-  student   User   @relation("TopicStudent", fields: [studentId], references: [id])
+  studentId    String
+  student      User   @relation("TopicStudent", fields: [studentId], references: [id])
+  supervisorId String
+  supervisor   User   @relation("TopicSupervisor", fields: [supervisorId], references: [id])
 
   @@map("topic_requests")
 }
@@ -193,6 +215,84 @@ model ReviewCriteriaConfig {
   weight      Float   @default(1.0)
   maxScore    Int     @default(10)
   isActive    Boolean @default(true)
+  orderIndex  Int     @default(0)
 
   @@map("review_criteria_config")
+}
+
+model StudentPortfolioItem {
+  id          String            @id @default(uuid())
+  title       String
+  type        PortfolioItemType
+  description String?           @db.Text
+  year        Int?
+  grade       String?
+  fileUrl     String?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  studentId String
+  student   User   @relation("StudentPortfolio", fields: [studentId], references: [id])
+
+  @@map("student_portfolio_items")
+}
+
+model WorkMessage {
+  id        String   @id @default(uuid())
+  text      String   @db.Text
+  createdAt DateTime @default(now())
+
+  authorId String
+  author   User   @relation("WorkMessages", fields: [authorId], references: [id])
+  workId   String
+  work     Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+
+  @@map("work_messages")
+}
+
+model SupervisorTopic {
+  id          String   @id @default(uuid())
+  title       String
+  description String?  @db.Text
+  area        String?
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  supervisorId String
+  supervisor   User            @relation("SupervisorTopics", fields: [supervisorId], references: [id])
+  responses    TopicResponse[]
+
+  @@map("supervisor_topics")
+}
+
+model InfoPost {
+  id        String   @id @default(uuid())
+  title     String
+  content   String   @db.Text
+  isPinned  Boolean  @default(false)
+  tags      String[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  authorId String
+  author   User   @relation("InfoPostAuthor", fields: [authorId], references: [id])
+
+  @@map("info_posts")
+}
+
+model TopicResponse {
+  id        String              @id @default(uuid())
+  message   String?             @db.Text
+  status    TopicResponseStatus @default(PENDING)
+  createdAt DateTime            @default(now())
+  updatedAt DateTime            @updatedAt
+
+  studentId String
+  student   User            @relation("StudentTopicResponses", fields: [studentId], references: [id])
+  topicId   String
+  topic     SupervisorTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, topicId])
+  @@map("topic_responses")
 }
