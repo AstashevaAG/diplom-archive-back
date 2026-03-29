@@ -11,6 +11,11 @@ import { CommentsModule } from './comments/comments.module';
 import { TopicRequestsModule } from './topic-requests/topic-requests.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { PortfolioModule } from './portfolio/portfolio.module';
+import { WorkMessagesModule } from './work-messages/work-messages.module';
+import { SupervisorTopicsModule } from './supervisor-topics/supervisor-topics.module';
+import { ReviewCriteriaModule } from './review-criteria/review-criteria.module';
+import { InfoModule } from './info/info.module';
 
 @Module({
   imports: [
@@ -29,6 +34,11 @@ import { AnalyticsModule } from './analytics/analytics.module';
     TopicRequestsModule,
     NotificationsModule,
     AnalyticsModule,
+    PortfolioModule,
+    WorkMessagesModule,
+    SupervisorTopicsModule,
+    ReviewCriteriaModule,
+    InfoModule,
   ],
 })
 export class AppModule {}
