@@ -3,9 +3,17 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { Role, User, WorkStatus, Prisma } from '@prisma/client';
+import { Role, User, WorkStatus, WorkStage, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma';
-import { CreateWorkDto, UpdateWorkDto, UpdateWorkStatusDto, WorkQueryDto } from './dto';
+import {
+  CreateWorkDto,
+  UpdateWorkDto,
+  UpdateWorkStatusDto,
+  UpdateStageDto,
+  WorkQueryDto,
+  SortBy,
+  StatusFilter,
+} from './dto';
 import { PaginatedResult, WorkWithRelations } from './interfaces';
 
 const workInclude = {
@@ -19,7 +27,10 @@ const workInclude = {
 export class WorksService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(dto: CreateWorkDto, authorId: string): Promise<WorkWithRelations> {
+  async create(
+    dto: CreateWorkDto,
+    authorId: string,
+  ): Promise<WorkWithRelations> {
     const work = await this.prisma.work.create({
       data: {
         title: dto.title,
@@ -57,19 +68,59 @@ export class WorksService {
     const limit = query.limit ?? 20;
     const skip = (page - 1) * limit;
 
+    const statusFilter = query.statusFilter ?? StatusFilter.PUBLISHED;
+
     const where: Prisma.WorkWhereInput = {};
+
+    if (statusFilter === StatusFilter.PUBLISHED) {
+      where.status = WorkStatus.PUBLISHED;
+      where.isPublic = true;
+    } else if (statusFilter === StatusFilter.IN_PROGRESS) {
+      where.status = { notIn: [WorkStatus.PUBLISHED, WorkStatus.DRAFT] };
+    }
+    // ALL: no status filter
+
     if (query.category) where.category = query.category;
     if (query.year) where.year = query.year;
     if (query.supervisorId) where.supervisorId = query.supervisorId;
     if (query.status) where.status = query.status;
+    if (query.minScore !== undefined || query.maxScore !== undefined) {
+      where.qualityScore = {};
+      if (query.minScore !== undefined) where.qualityScore.gte = query.minScore;
+      if (query.maxScore !== undefined) where.qualityScore.lte = query.maxScore;
+    }
+
+    let orderBy: Prisma.WorkOrderByWithRelationInput;
+    switch (query.sortBy) {
+      case SortBy.OLDEST:
+        orderBy = { createdAt: 'asc' };
+        break;
+      case SortBy.SCORE_DESC:
+        orderBy = { qualityScore: 'desc' };
+        break;
+      case SortBy.SCORE_ASC:
+        orderBy = { qualityScore: 'asc' };
+        break;
+      default:
+        orderBy = { createdAt: 'desc' };
+    }
+
+    const inProgressInclude = {
+      author: { select: { id: true, fullName: true, email: true } },
+      supervisor: { select: { id: true, fullName: true, email: true } },
+      _count: { select: { reviews: true, comments: true } },
+    } satisfies Prisma.WorkInclude;
+
+    const includeToUse =
+      statusFilter === StatusFilter.IN_PROGRESS ? inProgressInclude : workInclude;
 
     const [data, total] = await Promise.all([
       this.prisma.work.findMany({
         where,
-        include: workInclude,
+        include: includeToUse,
         skip,
         take: limit,
-        orderBy: { createdAt: 'desc' },
+        orderBy,
       }),
       this.prisma.work.count({ where }),
     ]);
@@ -161,7 +212,11 @@ export class WorksService {
       throw new NotFoundException('Работа не найдена');
     }
 
-    if (work.authorId !== user.id && user.role !== Role.ADMIN) {
+    if (
+      work.authorId !== user.id &&
+      work.supervisorId !== user.id &&
+      user.role !== Role.ADMIN
+    ) {
       throw new ForbiddenException('Нет прав для редактирования');
     }
 
@@ -192,9 +247,14 @@ export class WorksService {
       throw new ForbiddenException('Нет прав для изменения статуса');
     }
 
+    const updateData: Prisma.WorkUpdateInput = { status: dto.status };
+    if (dto.status === WorkStatus.PUBLISHED) {
+      updateData.isPublic = true;
+    }
+
     const updated = await this.prisma.work.update({
       where: { id },
-      data: { status: dto.status },
+      data: updateData,
       include: workInclude,
     });
 
@@ -212,5 +272,52 @@ export class WorksService {
     }
 
     await this.prisma.work.delete({ where: { id } });
+  }
+
+  async getStages(workId: string): Promise<WorkStage[]> {
+    const work = await this.prisma.work.findUnique({ where: { id: workId } });
+    if (!work) {
+      throw new NotFoundException('Работа не найдена');
+    }
+
+    return this.prisma.workStage.findMany({
+      where: { workId },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
+
+  async updateStage(
+    workId: string,
+    stageId: string,
+    dto: UpdateStageDto,
+    user: User,
+  ): Promise<WorkStage> {
+    const work = await this.prisma.work.findUnique({ where: { id: workId } });
+    if (!work) {
+      throw new NotFoundException('Работа не найдена');
+    }
+
+    if (
+      work.authorId !== user.id &&
+      work.supervisorId !== user.id &&
+      user.role !== Role.ADMIN
+    ) {
+      throw new ForbiddenException('Нет прав для изменения этапов');
+    }
+
+    const stage = await this.prisma.workStage.findUnique({
+      where: { id: stageId },
+    });
+    if (!stage || stage.workId !== workId) {
+      throw new NotFoundException('Этап не найден');
+    }
+
+    return this.prisma.workStage.update({
+      where: { id: stageId },
+      data: {
+        isCompleted: dto.isCompleted,
+        completedAt: dto.isCompleted ? new Date() : null,
+      },
+    });
   }
 }

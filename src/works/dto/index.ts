@@ -6,12 +6,30 @@ import {
   IsInt,
   IsEnum,
   IsBoolean,
+  IsNumber,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { WorkStatus } from '@prisma/client';
 
+export enum SortBy {
+  NEWEST = 'newest',
+  OLDEST = 'oldest',
+  SCORE_DESC = 'scoreDesc',
+  SCORE_ASC = 'scoreAsc',
+}
+
+export enum StatusFilter {
+  PUBLISHED = 'published',
+  IN_PROGRESS = 'in_progress',
+  ALL = 'all',
+}
+
 export class CreateWorkDto {
-  @ApiProperty({ example: 'Влияние когнитивно-поведенческой терапии на тревожные расстройства' })
+  @ApiProperty({
+    example:
+      'Влияние когнитивно-поведенческой терапии на тревожные расстройства',
+  })
   @IsString()
   @IsNotEmpty()
   title!: string;
@@ -82,6 +100,13 @@ export class UpdateWorkStatusDto {
   status!: WorkStatus;
 }
 
+export class UpdateStageDto {
+  @ApiPropertyOptional({ description: 'Отметить этап как выполненный' })
+  @IsBoolean()
+  @IsOptional()
+  isCompleted?: boolean;
+}
+
 export class WorkQueryDto {
   @ApiPropertyOptional()
   @IsString()
@@ -89,8 +114,9 @@ export class WorkQueryDto {
   category?: string;
 
   @ApiPropertyOptional()
-  @IsInt()
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
   year?: number;
 
   @ApiPropertyOptional()
@@ -103,13 +129,37 @@ export class WorkQueryDto {
   @IsOptional()
   status?: WorkStatus;
 
-  @ApiPropertyOptional({ default: 1 })
-  @IsInt()
+  @ApiPropertyOptional({ enum: SortBy, default: SortBy.NEWEST })
+  @IsEnum(SortBy)
   @IsOptional()
+  sortBy?: SortBy;
+
+  @ApiPropertyOptional({ enum: StatusFilter, default: StatusFilter.PUBLISHED })
+  @IsEnum(StatusFilter)
+  @IsOptional()
+  statusFilter?: StatusFilter;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  minScore?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  maxScore?: number;
+
+  @ApiPropertyOptional({ default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
   page?: number;
 
   @ApiPropertyOptional({ default: 20 })
-  @IsInt()
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
   limit?: number;
 }

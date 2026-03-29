@@ -14,8 +14,15 @@ import {
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { User } from '@prisma/client';
 import { WorksService } from './works.service';
-import { CreateWorkDto, UpdateWorkDto, UpdateWorkStatusDto, WorkQueryDto } from './dto';
+import {
+  CreateWorkDto,
+  UpdateWorkDto,
+  UpdateWorkStatusDto,
+  UpdateStageDto,
+  WorkQueryDto,
+} from './dto';
 import { PaginatedResult, WorkWithRelations } from './interfaces';
+import { WorkStage } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards';
 import { CurrentUser } from '../auth/decorators';
 
@@ -64,7 +71,9 @@ export class WorksController {
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Работы под руководством (преподаватель)' })
-  async findSupervised(@CurrentUser() user: User): Promise<WorkWithRelations[]> {
+  async findSupervised(
+    @CurrentUser() user: User,
+  ): Promise<WorkWithRelations[]> {
     return this.worksService.findBySupervisor(user.id);
   }
 
@@ -108,5 +117,24 @@ export class WorksController {
     @CurrentUser() user: User,
   ): Promise<void> {
     return this.worksService.delete(id, user);
+  }
+
+  @Get(':id/stages')
+  @ApiOperation({ summary: 'Этапы работы' })
+  async getStages(@Param('id') id: string): Promise<WorkStage[]> {
+    return this.worksService.getStages(id);
+  }
+
+  @Patch(':id/stages/:stageId')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Обновить статус этапа' })
+  async updateStage(
+    @Param('id') id: string,
+    @Param('stageId') stageId: string,
+    @Body() dto: UpdateStageDto,
+    @CurrentUser() user: User,
+  ): Promise<WorkStage> {
+    return this.worksService.updateStage(id, stageId, dto, user);
   }
 }
