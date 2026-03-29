@@ -3,7 +3,7 @@ import {
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { Role, User } from '@prisma/client';
+import { Role, User, StudentPortfolioItem } from '@prisma/client';
 import { PrismaService } from '../prisma';
 import { UpdateUserDto } from './dto';
 import { SafeUser, toSafeUser } from './interfaces';
@@ -74,5 +74,32 @@ export class UsersService {
       data: { isBlocked: block },
     });
     return toSafeUser(user);
+  }
+
+  async getPortfolioByUserId(userId: string): Promise<StudentPortfolioItem[]> {
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new NotFoundException('Пользователь не найден');
+    return this.prisma.studentPortfolioItem.findMany({
+      where: { studentId: userId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async getWorksAsSupervisor(supervisorId: string) {
+    const user = await this.prisma.user.findUnique({ where: { id: supervisorId } });
+    if (!user) throw new NotFoundException('Пользователь не найден');
+    return this.prisma.work.findMany({
+      where: {
+        supervisorId,
+        status: 'PUBLISHED',
+        isPublic: true,
+      },
+      include: {
+        author: { select: { id: true, fullName: true, email: true } },
+        supervisor: { select: { id: true, fullName: true, email: true } },
+        _count: { select: { reviews: true, comments: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
   }
 }

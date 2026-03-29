@@ -8,7 +8,7 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
-import { Role, User } from '@prisma/client';
+import { Role, User, StudentPortfolioItem } from '@prisma/client';
 import { UsersService } from './users.service';
 import { UpdateUserDto } from './dto';
 import { SafeUser } from './interfaces';
@@ -85,5 +85,17 @@ export class UsersController {
     @CurrentUser() admin: User,
   ): Promise<SafeUser> {
     return this.usersService.blockUser(id, block, admin);
+  }
+
+  @Get(':id/portfolio')
+  @ApiOperation({ summary: 'Портфолио студента' })
+  async getPortfolio(@Param('id') id: string): Promise<StudentPortfolioItem[]> {
+    return this.usersService.getPortfolioByUserId(id);
+  }
+
+  @Get(':id/works')
+  @ApiOperation({ summary: 'Опубликованные работы преподавателя' })
+  async getSupervisorWorks(@Param('id') id: string) {
+    return this.usersService.getWorksAsSupervisor(id);
   }
 }
