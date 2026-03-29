@@ -11,31 +11,48 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
 import { Response } from 'express';
+import { User, Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards';
+import { CurrentUser } from '../auth/decorators';
 import { FilesService } from './files.service';
+import { PrismaService } from '../prisma';
 import { File as PrismaFile } from '@prisma/client';
 
 @ApiTags('Files')
 @Controller('files')
 export class FilesController {
-  constructor(private readonly filesService: FilesService) {}
+  constructor(
+    private readonly filesService: FilesService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   @Post('works/:workId')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Загрузить файл к работе' })
+  @ApiOperation({ summary: 'Загрузить файл к работе (участник или admin)' })
   @ApiConsumes('multipart/form-data')
   @UseInterceptors(FileInterceptor('file'))
   async uploadFile(
     @Param('workId') workId: string,
     @UploadedFile() file: Express.Multer.File | undefined,
+    @CurrentUser() user: User,
   ): Promise<PrismaFile> {
     if (!file) {
       throw new BadRequestException('Файл не предоставлен');
+    }
+    const work = await this.prisma.work.findUnique({ where: { id: workId } });
+    if (!work) throw new BadRequestException('Работа не найдена');
+    if (
+      work.authorId !== user.id &&
+      work.supervisorId !== user.id &&
+      user.role !== Role.ADMIN
+    ) {
+      throw new ForbiddenException('Только участники работы могут загружать файлы');
     }
     return this.filesService.uploadFile(workId, file);
   }

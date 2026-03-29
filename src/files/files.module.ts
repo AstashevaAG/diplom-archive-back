@@ -3,9 +3,11 @@ import { MulterModule } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
 import { FilesController } from './files.controller';
 import { FilesService } from './files.service';
+import { PrismaModule } from '../prisma';
 
 @Module({
   imports: [
+    PrismaModule,
     MulterModule.register({
       storage: memoryStorage(),
       limits: {
