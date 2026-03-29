@@ -8,9 +8,9 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
-import { User, TopicRequest, TopicRequestStatus } from '@prisma/client';
+import { User, TopicRequest } from '@prisma/client';
 import { TopicRequestsService } from './topic-requests.service';
-import { CreateTopicRequestDto } from './dto';
+import { CreateTopicRequestDto, RejectTopicRequestDto } from './dto';
 import { JwtAuthGuard } from '../auth/guards';
 import { CurrentUser } from '../auth/decorators';
 
@@ -43,28 +43,21 @@ export class TopicRequestsController {
   }
 
   @Patch(':id/approve')
-  @ApiOperation({ summary: 'Утвердить заявку' })
+  @ApiOperation({ summary: 'Утвердить заявку и создать работу' })
   async approve(
     @Param('id') id: string,
     @CurrentUser() user: User,
   ): Promise<TopicRequest> {
-    return this.topicRequestsService.updateStatus(
-      id,
-      TopicRequestStatus.APPROVED,
-      user,
-    );
+    return this.topicRequestsService.approve(id, user);
   }
 
   @Patch(':id/reject')
-  @ApiOperation({ summary: 'Отклонить заявку' })
+  @ApiOperation({ summary: 'Отклонить заявку с указанием причины' })
   async reject(
     @Param('id') id: string,
+    @Body() dto: RejectTopicRequestDto,
     @CurrentUser() user: User,
   ): Promise<TopicRequest> {
-    return this.topicRequestsService.updateStatus(
-      id,
-      TopicRequestStatus.REJECTED,
-      user,
-    );
+    return this.topicRequestsService.reject(id, user, dto.rejectReason);
   }
 }

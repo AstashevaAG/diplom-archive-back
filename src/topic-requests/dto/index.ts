@@ -17,3 +17,10 @@ export class CreateTopicRequestDto {
   @IsNotEmpty()
   supervisorId!: string;
 }
+
+export class RejectTopicRequestDto {
+  @ApiPropertyOptional({ description: 'Причина отказа' })
+  @IsString()
+  @IsOptional()
+  rejectReason?: string;
+}
