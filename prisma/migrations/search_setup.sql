@@ -24,7 +24,7 @@ BEGIN
   NEW.search_vector :=
     setweight(to_tsvector('russian', COALESCE(NEW.title, '')), 'A') ||
     setweight(to_tsvector('russian', COALESCE(NEW.annotation, '')), 'B') ||
-    setweight(to_tsvector('russian', COALESCE(NEW.full_text, '')), 'C') ||
+    setweight(to_tsvector('russian', COALESCE(NEW."fullText", '')), 'C') ||
     setweight(to_tsvector('russian', COALESCE(array_to_string(NEW.tags, ' '), '')), 'A');
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
