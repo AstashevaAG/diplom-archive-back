@@ -18,6 +18,7 @@ export interface SearchResponse {
   page: number;
   limit: number;
   totalPages: number;
+  convertedQuery?: string;
 }
 
 export interface SuggestResult {
