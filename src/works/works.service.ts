@@ -34,6 +34,7 @@ export class WorksService {
     const work = await this.prisma.work.create({
       data: {
         title: dto.title,
+        description: dto.description,
         annotation: dto.annotation,
         category: dto.category,
         tags: dto.tags ?? [],

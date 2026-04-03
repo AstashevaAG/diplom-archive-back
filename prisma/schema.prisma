@@ -88,6 +88,7 @@ model User {
 model Work {
   id           String     @id @default(uuid())
   title        String
+  description  String?    @db.Text
   annotation   String?    @db.Text
   fullText     String?    @db.Text
   category     String?

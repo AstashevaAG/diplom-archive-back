@@ -85,6 +85,7 @@ export class SearchService {
       SELECT
         w.id,
         w.title,
+        w.description,
         w.annotation,
         w.category,
         COALESCE(w.tags, ARRAY[]::text[]) AS tags,
@@ -99,7 +100,7 @@ export class SearchService {
           similarity(w.title, $2)
         ) AS rank,
         ts_headline('russian',
-          COALESCE(w.annotation, ''),
+          COALESCE(w.annotation, w.description, ''),
           plainto_tsquery('russian', $1),
           'MaxWords=50, MinWords=20, StartSel=<mark>, StopSel=</mark>'
         ) AS headline
@@ -115,6 +116,8 @@ export class SearchService {
         OR w.title ILIKE '%' || $2 || '%'
         OR w.annotation ILIKE '%' || $1 || '%'
         OR w.annotation ILIKE '%' || $2 || '%'
+        OR w.description ILIKE '%' || $1 || '%'
+        OR w.description ILIKE '%' || $2 || '%'
       )
       AND (w."isPublic" = true OR w.status = 'PUBLISHED')
       AND ${filterClause}
@@ -137,6 +140,8 @@ export class SearchService {
         OR w.title ILIKE '%' || $2 || '%'
         OR w.annotation ILIKE '%' || $1 || '%'
         OR w.annotation ILIKE '%' || $2 || '%'
+        OR w.description ILIKE '%' || $1 || '%'
+        OR w.description ILIKE '%' || $2 || '%'
       )
       AND (w."isPublic" = true OR w.status = 'PUBLISHED')
       AND ${filterClause}

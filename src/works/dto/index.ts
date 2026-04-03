@@ -34,6 +34,11 @@ export class CreateWorkDto {
   @IsNotEmpty()
   title!: string;
 
+  @ApiPropertyOptional({ example: 'Краткое описание темы и целей работы' })
+  @IsString()
+  @IsOptional()
+  description?: string;
+
   @ApiPropertyOptional({ example: 'Аннотация работы...' })
   @IsString()
   @IsOptional()
@@ -66,6 +71,11 @@ export class UpdateWorkDto {
   @IsString()
   @IsOptional()
   title?: string;
+
+  @ApiPropertyOptional()
+  @IsString()
+  @IsOptional()
+  description?: string;
 
   @ApiPropertyOptional()
   @IsString()

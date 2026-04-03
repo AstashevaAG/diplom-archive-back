@@ -1,6 +1,7 @@
 export interface SearchResult {
   id: string;
   title: string;
+  description: string | null;
   annotation: string | null;
   category: string | null;
   tags: string[];
