@@ -18,12 +18,7 @@ interface AuthSocket extends Socket {
 
 @WebSocketGateway({
   cors: {
-    origin: [
-      'http://localhost:5173',
-      'http://localhost:5174',
-      process.env.CORS_ORIGIN ?? '',
-    ].filter(Boolean),
-    credentials: true,
+    origin: '*',
   },
   namespace: 'chat',
 })
