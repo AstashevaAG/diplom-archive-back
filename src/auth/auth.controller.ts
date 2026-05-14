@@ -10,7 +10,7 @@ import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagg
 import { User } from '@prisma/client';
 import { AuthService } from './auth.service';
 import { RegisterDto, LoginDto, RefreshTokenDto } from './dto';
-import { AuthResponse, TokenPair } from './interfaces';
+import { AuthResponse, RegisterResponse, TokenPair } from './interfaces';
 import { JwtAuthGuard } from './guards';
 import { CurrentUser } from './decorators';
 
@@ -23,7 +23,7 @@ export class AuthController {
   @ApiOperation({ summary: 'Регистрация нового пользователя' })
   @ApiResponse({ status: 201, description: 'Пользователь успешно зарегистрирован' })
   @ApiResponse({ status: 409, description: 'Email уже используется' })
-  async register(@Body() dto: RegisterDto): Promise<AuthResponse> {
+  async register(@Body() dto: RegisterDto): Promise<RegisterResponse> {
     return this.authService.register(dto);
   }
 

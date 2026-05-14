@@ -20,3 +20,10 @@ export interface AuthResponse {
   };
   tokens: TokenPair;
 }
+
+export interface PendingRegistrationResponse {
+  requiresApproval: true;
+  message: string;
+}
+
+export type RegisterResponse = AuthResponse | PendingRegistrationResponse;

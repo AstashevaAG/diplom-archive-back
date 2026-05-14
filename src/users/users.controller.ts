@@ -87,6 +87,18 @@ export class UsersController {
     return this.usersService.blockUser(id, block, admin);
   }
 
+  @Patch(':id/approve')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(Role.ADMIN)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Подтвердить регистрацию пользователя (Admin)' })
+  async approveUser(
+    @Param('id') id: string,
+    @CurrentUser() admin: User,
+  ): Promise<SafeUser> {
+    return this.usersService.approveUser(id, admin);
+  }
+
   @Get(':id/portfolio')
   @ApiOperation({ summary: 'Портфолио студента' })
   async getPortfolio(@Param('id') id: string): Promise<StudentPortfolioItem[]> {

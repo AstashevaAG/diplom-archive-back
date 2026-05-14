@@ -1,1 +1,7 @@
-export { JwtPayload, TokenPair, AuthResponse } from './auth.interfaces';
+export {
+  JwtPayload,
+  TokenPair,
+  AuthResponse,
+  PendingRegistrationResponse,
+  RegisterResponse,
+} from './auth.interfaces';

@@ -23,14 +23,14 @@ export class UsersService {
   async findAll(role?: Role): Promise<SafeUser[]> {
     const users = await this.prisma.user.findMany({
       where: role ? { role } : undefined,
-      orderBy: { fullName: 'asc' },
+      orderBy: [{ isApproved: 'asc' }, { fullName: 'asc' }],
     });
     return users.map(toSafeUser);
   }
 
   async findSupervisors(): Promise<SafeUser[]> {
     const users = await this.prisma.user.findMany({
-      where: { role: Role.SUPERVISOR, isBlocked: false },
+      where: { role: Role.SUPERVISOR, isBlocked: false, isApproved: true },
       orderBy: { fullName: 'asc' },
     });
     return users.map(toSafeUser);
@@ -72,6 +72,18 @@ export class UsersService {
     const user = await this.prisma.user.update({
       where: { id: targetUserId },
       data: { isBlocked: block },
+    });
+    return toSafeUser(user);
+  }
+
+  async approveUser(targetUserId: string, adminUser: User): Promise<SafeUser> {
+    if (adminUser.role !== Role.ADMIN) {
+      throw new ForbiddenException('Недостаточно прав');
+    }
+
+    const user = await this.prisma.user.update({
+      where: { id: targetUserId },
+      data: { isApproved: true },
     });
     return toSafeUser(user);
   }

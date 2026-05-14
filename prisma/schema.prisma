@@ -62,6 +62,7 @@ model User {
   specialization String?
   bio            String?
   avatarUrl      String?
+  isApproved     Boolean   @default(true)
   isBlocked      Boolean   @default(false)
   failedLogins   Int       @default(0)
   blockedUntil   DateTime?

@@ -9,7 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma';
 import { RegisterDto, LoginDto } from './dto';
-import { JwtPayload, TokenPair, AuthResponse } from './interfaces';
+import { JwtPayload, TokenPair, AuthResponse, RegisterResponse } from './interfaces';
 
 @Injectable()
 export class AuthService {
@@ -23,7 +23,7 @@ export class AuthService {
     private readonly configService: ConfigService,
   ) {}
 
-  async register(dto: RegisterDto): Promise<AuthResponse> {
+  async register(dto: RegisterDto): Promise<RegisterResponse> {
     const existingUser = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
@@ -42,8 +42,16 @@ export class AuthService {
         role: dto.role,
         group: dto.group,
         specialization: dto.specialization,
+        isApproved: dto.role === 'ADMIN' || dto.role === 'GUEST',
       },
     });
+
+    if (!user.isApproved) {
+      return {
+        requiresApproval: true,
+        message: 'Заявка на регистрацию отправлена администратору. Вход станет доступен после подтверждения аккаунта.',
+      };
+    }
 
     const tokens = await this.generateTokens({
       sub: user.id,
@@ -75,6 +83,10 @@ export class AuthService {
 
     if (user.isBlocked) {
       throw new ForbiddenException('Аккаунт заблокирован');
+    }
+
+    if (!user.isApproved) {
+      throw new ForbiddenException('Аккаунт ожидает подтверждения администратором');
     }
 
     if (user.blockedUntil && user.blockedUntil > new Date()) {
@@ -143,7 +155,7 @@ export class AuthService {
       where: { id: payload.sub },
     });
 
-    if (!user || !user.refreshToken) {
+    if (!user || !user.refreshToken || !user.isApproved) {
       throw new UnauthorizedException('Доступ запрещён');
     }
 

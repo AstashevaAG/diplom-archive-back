@@ -29,7 +29,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       where: { id: payload.sub },
     });
 
-    if (!user || user.isBlocked) {
+    if (!user || user.isBlocked || !user.isApproved) {
       throw new UnauthorizedException('Доступ запрещён');
     }
 
