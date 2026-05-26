@@ -6,7 +6,7 @@ export interface SearchResult {
   category: string | null;
   tags: string[];
   year: number | null;
-  qualityScore: number | null;
+  commissionReviewScore: number | null;
   authorName: string;
   supervisorName: string | null;
   rank: number;

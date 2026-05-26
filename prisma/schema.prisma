@@ -79,6 +79,7 @@ model User {
   notifications              Notification[]
   portfolioItems             StudentPortfolioItem[] @relation("StudentPortfolio")
   workMessages               WorkMessage[]         @relation("WorkMessages")
+  topicResponseMessages      TopicResponseMessage[] @relation("TopicResponseMessages")
   supervisorTopics           SupervisorTopic[]     @relation("SupervisorTopics")
   topicResponses             TopicResponse[]       @relation("StudentTopicResponses")
   infoPosts                  InfoPost[]            @relation("InfoPostAuthor")
@@ -96,7 +97,8 @@ model Work {
   tags         String[]
   status       WorkStatus @default(DRAFT)
   year         Int?
-  qualityScore Float?
+  commissionReviewScore Float? @map("supervisorReviewScore")
+  externalReviewScore    Float?
   viewCount    Int        @default(0)
   isPublic     Boolean    @default(false)
   createdAt    DateTime   @default(now())
@@ -125,10 +127,13 @@ model File {
   type         FileType
   url          String
   version      Int      @default(1)
+  comment      String?  @db.Text
+  textContent  String?  @db.Text
   createdAt    DateTime @default(now())
 
   workId String
   work   Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+  messages WorkMessage[]
 
   @@map("files")
 }
@@ -140,6 +145,7 @@ model Review {
   totalScore  Float
   comment     String? @db.Text
   isFinalized Boolean @default(false)
+  isCommissionReview Boolean @default(false) @map("isSupervisorReview")
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -248,6 +254,8 @@ model WorkMessage {
   author   User   @relation("WorkMessages", fields: [authorId], references: [id])
   workId   String
   work     Work   @relation(fields: [workId], references: [id], onDelete: Cascade)
+  fileId   String?
+  file     File?  @relation(fields: [fileId], references: [id], onDelete: SetNull)
 
   @@map("work_messages")
 }
@@ -295,6 +303,21 @@ model TopicResponse {
   topicId   String
   topic     SupervisorTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
 
+  messages TopicResponseMessage[]
+
   @@unique([studentId, topicId])
   @@map("topic_responses")
+}
+
+model TopicResponseMessage {
+  id        String   @id @default(uuid())
+  text      String   @db.Text
+  createdAt DateTime @default(now())
+
+  authorId String
+  author   User          @relation("TopicResponseMessages", fields: [authorId], references: [id])
+  responseId String
+  response TopicResponse @relation(fields: [responseId], references: [id], onDelete: Cascade)
+
+  @@map("topic_response_messages")
 }

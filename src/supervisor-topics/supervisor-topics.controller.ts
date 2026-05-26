@@ -16,9 +16,11 @@ import {
   CreateSupervisorTopicDto,
   UpdateSupervisorTopicDto,
   RespondToTopicDto,
+  SendTopicResponseMessageDto,
 } from './dto';
 import { JwtAuthGuard } from '../auth/guards';
 import { CurrentUser } from '../auth/decorators';
+import type { TopicResponseMessageWithAuthor } from './supervisor-topics.service';
 
 @ApiTags('Supervisor Topics')
 @Controller('supervisor-topics')
@@ -107,6 +109,40 @@ export class SupervisorTopicsController {
     @CurrentUser() user: User,
   ): Promise<TopicResponse[]> {
     return this.supervisorTopicsService.getResponses(topicId, user.id);
+  }
+
+  @Get(':id/responses/:responseId/messages')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Диалог по отклику на тему' })
+  async getResponseMessages(
+    @Param('id') topicId: string,
+    @Param('responseId') responseId: string,
+    @CurrentUser() user: User,
+  ): Promise<TopicResponseMessageWithAuthor[]> {
+    return this.supervisorTopicsService.getResponseMessages(
+      topicId,
+      responseId,
+      user.id,
+    );
+  }
+
+  @Post(':id/responses/:responseId/messages')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Отправить сообщение по отклику на тему' })
+  async sendResponseMessage(
+    @Param('id') topicId: string,
+    @Param('responseId') responseId: string,
+    @Body() dto: SendTopicResponseMessageDto,
+    @CurrentUser() user: User,
+  ): Promise<TopicResponseMessageWithAuthor> {
+    return this.supervisorTopicsService.sendResponseMessage(
+      topicId,
+      responseId,
+      user.id,
+      dto.text,
+    );
   }
 
   @Patch(':id/responses/:responseId/accept')

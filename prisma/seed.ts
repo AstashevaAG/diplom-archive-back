@@ -86,6 +86,11 @@ async function main(): Promise<void> {
     { fullName: 'Доцент Каппа', score: 0.44, comment: 'Есть значимые замечания, но для теста рецензирования этого достаточно.' },
   ];
 
+  const supervisorReviewSpec = {
+    score: 0.87,
+    comment: 'Как научный руководитель подтверждаю готовность работы к защите.',
+  };
+
   const reviewers = [];
   for (let i = 0; i < reviewerSpecs.length; i += 1) {
     const spec = reviewerSpecs[i];
@@ -114,7 +119,6 @@ async function main(): Promise<void> {
       supervisorId: supervisor.id,
       status: WorkStatus.REVIEW,
       isPublic: false,
-      qualityScore: null,
     },
   });
 
@@ -130,6 +134,21 @@ async function main(): Promise<void> {
   });
 
   const createdReviews = [];
+
+  const supervisorReview = await prisma.review.create({
+    data: {
+      workId: work.id,
+      reviewerId: supervisor.id,
+      criteria: criteriaTemplate,
+      weights: weightsTemplate,
+      comment: supervisorReviewSpec.comment,
+      totalScore: supervisorReviewSpec.score,
+      isFinalized: true,
+      isCommissionReview: true,
+    },
+  });
+  createdReviews.push(supervisorReview);
+
   for (let i = 0; i < reviewers.length; i += 1) {
     const reviewer = reviewers[i];
     const score = reviewerSpecs[i].score;
@@ -151,19 +170,25 @@ async function main(): Promise<void> {
         comment: reviewerSpecs[i].comment,
         totalScore: score,
         isFinalized: i === 0,
+        isCommissionReview: false,
       },
     });
     createdReviews.push(review);
   }
 
-  const avgScore =
-    createdReviews.reduce((sum, review) => sum + review.totalScore, 0) /
-    createdReviews.length;
+  const supervisorAvg = supervisorReview.totalScore;
+  const externalReviews = createdReviews.filter(
+    (review) => review.reviewerId !== supervisor.id,
+  );
+  const externalAvg =
+    externalReviews.reduce((sum, review) => sum + review.totalScore, 0) /
+    externalReviews.length;
 
   await prisma.work.update({
     where: { id: work.id },
     data: {
-      qualityScore: Math.round(avgScore * 100) / 100,
+      commissionReviewScore: Math.round(supervisorAvg * 100) / 100,
+      externalReviewScore: Math.round(externalAvg * 100) / 100,
       status: WorkStatus.DEFENSE,
       isPublic: true,
     },
@@ -213,7 +238,50 @@ async function main(): Promise<void> {
     },
   });
 
-  console.log(`Seed complete: work=${work.id}, reviews=${createdReviews.length}, avg=${Math.round(avgScore * 100) / 100}`);
+  const allWorks = await prisma.work.findMany({
+    include: {
+      reviews: true,
+      supervisor: { select: { id: true } },
+    },
+  });
+
+  for (const item of allWorks) {
+    const commission = item.reviews.filter(
+      (review) => review.reviewerId === item.supervisorId,
+    );
+    const external = item.reviews.filter(
+      (review) => review.reviewerId !== item.supervisorId,
+    );
+
+    const commissionReviewScore =
+      commission.length > 0
+        ? Math.round(
+            (commission.reduce((sum, review) => sum + review.totalScore, 0) /
+              commission.length) *
+              100,
+          ) / 100
+        : null;
+    const externalReviewScore =
+      external.length > 0
+        ? Math.round(
+            (external.reduce((sum, review) => sum + review.totalScore, 0) /
+              external.length) *
+              100,
+          ) / 100
+        : null;
+
+    await prisma.work.update({
+      where: { id: item.id },
+      data: {
+        commissionReviewScore,
+        externalReviewScore,
+      },
+    });
+  }
+
+  console.log(
+    `Seed complete: work=${work.id}, reviews=${createdReviews.length}, commission=${Math.round(supervisorAvg * 100) / 100}, external=${Math.round(externalAvg * 100) / 100}`,
+  );
 }
 
 main()

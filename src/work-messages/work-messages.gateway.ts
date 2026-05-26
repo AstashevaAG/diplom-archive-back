@@ -80,7 +80,7 @@ export class WorkMessagesGateway
   @SubscribeMessage('sendMessage')
   async handleMessage(
     @ConnectedSocket() client: AuthSocket,
-    @MessageBody() data: { workId: string; text: string },
+    @MessageBody() data: { workId: string; text: string; fileId?: string },
   ): Promise<void> {
     if (!client.userId || !data.text?.trim()) return;
     try {
@@ -88,6 +88,7 @@ export class WorkMessagesGateway
         data.workId,
         client.userId,
         data.text.trim(),
+        data.fileId,
       );
       this.server.to(`work:${data.workId}`).emit('newMessage', msg);
     } catch {

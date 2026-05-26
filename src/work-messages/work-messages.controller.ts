@@ -6,19 +6,23 @@ import {
   Param,
   UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth, ApiProperty } from '@nestjs/swagger';
 import { User } from '@prisma/client';
-import { WorkMessagesService, WorkMessageWithAuthor } from './work-messages.service';
+import { WorkMessagesService, type WorkMessageWithAuthor } from './work-messages.service';
 import { JwtAuthGuard } from '../auth/guards';
 import { CurrentUser } from '../auth/decorators';
-import { IsString, MinLength } from 'class-validator';
-import { ApiProperty } from '@nestjs/swagger';
+import { IsOptional, IsString, MinLength } from 'class-validator';
 
 class SendMessageDto {
   @ApiProperty()
   @IsString()
   @MinLength(1)
   text!: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  fileId?: string;
 }
 
 @ApiTags('Work Messages')
@@ -35,7 +39,7 @@ export class WorkMessagesController {
     @Body() dto: SendMessageDto,
     @CurrentUser() user: User,
   ): Promise<WorkMessageWithAuthor> {
-    return this.workMessagesService.sendMessage(workId, user.id, dto.text);
+    return this.workMessagesService.sendMessage(workId, user.id, dto.text, dto.fileId);
   }
 
   @Get()

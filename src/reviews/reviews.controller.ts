@@ -3,9 +3,12 @@ import {
   Post,
   Get,
   Patch,
+  Delete,
   Body,
   Param,
   UseGuards,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { User, Review } from '@prisma/client';
@@ -47,6 +50,18 @@ export class ReviewsController {
     @CurrentUser() user: User,
   ): Promise<Review> {
     return this.reviewsService.update(id, user.id, dto);
+  }
+
+  @Delete('reviews/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Удалить рецензию' })
+  async delete(
+    @Param('id') id: string,
+    @CurrentUser() user: User,
+  ): Promise<void> {
+    return this.reviewsService.delete(id, user.id);
   }
 
   @Post('reviews/:id/finalize')

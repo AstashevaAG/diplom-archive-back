@@ -14,9 +14,22 @@ const RU_TO_EN: Record<string, string> = Object.fromEntries(
   Object.entries(EN_TO_RU).map(([k, v]) => [v, k]),
 );
 
+interface SqlFilter {
+  clause: string;
+  params: Array<string | number>;
+}
+
 @Injectable()
 export class SearchService {
   constructor(private readonly prisma: PrismaService) {}
+
+  private normalizeQuery(text: string): string {
+    return text.replace(/\s+/g, ' ').trim();
+  }
+
+  private addYoVariant(text: string): string {
+    return text.replace(/ё/g, 'е').replace(/Ё/g, 'Е');
+  }
 
   private convertLayout(text: string, map: Record<string, string>): string {
     return text
@@ -34,14 +47,134 @@ export class SearchService {
   }
 
   private getSearchVariants(q: string): string[] {
-    const variants = [q];
-    if (this.hasLatinChars(q)) {
-      variants.push(this.convertLayout(q, EN_TO_RU));
+    const normalized = this.normalizeQuery(q);
+    const variants = [normalized, this.addYoVariant(normalized)];
+    if (this.hasLatinChars(normalized)) {
+      variants.push(this.convertLayout(normalized, EN_TO_RU));
     }
-    if (this.hasCyrillicChars(q)) {
-      variants.push(this.convertLayout(q, RU_TO_EN));
+    if (this.hasCyrillicChars(normalized)) {
+      variants.push(this.convertLayout(normalized, RU_TO_EN));
     }
-    return [...new Set(variants)];
+    return [...new Set(variants.map((v) => this.normalizeQuery(v)).filter(Boolean))];
+  }
+
+  private buildFilters(dto: SearchQueryDto, startIndex: number): SqlFilter {
+    const filters: string[] = ['1=1'];
+    const params: Array<string | number> = [];
+    let paramIndex = startIndex;
+
+    if (dto.year) {
+      filters.push(`sw.year = $${String(paramIndex)}`);
+      params.push(dto.year);
+      paramIndex++;
+    }
+    if (dto.supervisorId) {
+      filters.push(`sw."supervisorId" = $${String(paramIndex)}`);
+      params.push(dto.supervisorId);
+      paramIndex++;
+    }
+    if (dto.category) {
+      filters.push(`sw.category = $${String(paramIndex)}`);
+      params.push(dto.category);
+      paramIndex++;
+    }
+    if (dto.minScore !== undefined) {
+      filters.push(`sw."commissionReviewScore" >= $${String(paramIndex)}`);
+      params.push(dto.minScore);
+      paramIndex++;
+    }
+
+    return { clause: filters.join(' AND '), params };
+  }
+
+  private searchableWorksCte(): string {
+    return `
+      WITH searchable_works AS (
+        SELECT
+          w.id,
+          w.title,
+          w.description,
+          w.annotation,
+          w.category,
+          COALESCE(w.tags, ARRAY[]::text[]) AS tags,
+          w.year,
+          w."supervisorReviewScore" AS "commissionReviewScore",
+          w."supervisorId",
+          w.status,
+          w."isPublic",
+          u."fullName" AS "authorName",
+          s."fullName" AS "supervisorName",
+          COALESCE(
+            string_agg(f."textContent", E'\\n\\n' ORDER BY f.version DESC, f."createdAt" DESC)
+              FILTER (WHERE f."textContent" IS NOT NULL AND f."textContent" <> ''),
+            ''
+          ) AS file_text,
+          concat_ws(
+            E'\\n\\n',
+            w.title,
+            w.description,
+            w.annotation,
+            w."fullText",
+            COALESCE(
+              string_agg(f."textContent", E'\\n\\n' ORDER BY f.version DESC, f."createdAt" DESC)
+                FILTER (WHERE f."textContent" IS NOT NULL AND f."textContent" <> ''),
+              ''
+            )
+          ) AS document_text,
+          (
+            setweight(to_tsvector('russian', concat_ws(' ', COALESCE(w.title, ''), COALESCE(array_to_string(w.tags, ' '), ''))), 'A') ||
+            setweight(to_tsvector('russian', concat_ws(' ', COALESCE(w.description, ''), COALESCE(w.annotation, ''))), 'B') ||
+            setweight(to_tsvector('russian', concat_ws(
+              E'\\n\\n',
+              COALESCE(w."fullText", ''),
+              COALESCE(
+                string_agg(f."textContent", E'\\n\\n' ORDER BY f.version DESC, f."createdAt" DESC)
+                  FILTER (WHERE f."textContent" IS NOT NULL AND f."textContent" <> ''),
+                ''
+              )
+            )), 'C')
+          ) AS document_vector
+        FROM works w
+        JOIN users u ON w."authorId" = u.id
+        LEFT JOIN users s ON w."supervisorId" = s.id
+        LEFT JOIN files f ON f."workId" = w.id
+        GROUP BY w.id, u."fullName", s."fullName"
+      )
+    `;
+  }
+
+  private buildMatchCondition(queryRefs: string[]): string {
+    const perVariant = queryRefs.map(
+      (ref) => `
+        sw.document_vector @@ websearch_to_tsquery('russian', ${ref})
+        OR sw.title ILIKE '%' || ${ref} || '%'
+        OR COALESCE(sw.description, '') ILIKE '%' || ${ref} || '%'
+        OR COALESCE(sw.annotation, '') ILIKE '%' || ${ref} || '%'
+        OR sw.file_text ILIKE '%' || ${ref} || '%'
+        OR similarity(sw.title, ${ref}) > 0.12
+        OR similarity(COALESCE(sw.description, ''), ${ref}) > 0.08
+        OR similarity(COALESCE(sw.annotation, ''), ${ref}) > 0.08
+      `,
+    );
+
+    return perVariant.map((condition) => `(${condition})`).join(' OR ');
+  }
+
+  private buildRankExpression(queryRefs: string[]): string {
+    const ranks = queryRefs.flatMap((ref) => [
+      `ts_rank_cd(sw.document_vector, websearch_to_tsquery('russian', ${ref}))`,
+      `similarity(sw.title, ${ref})`,
+      `similarity(COALESCE(sw.description, ''), ${ref}) * 0.8`,
+      `similarity(COALESCE(sw.annotation, ''), ${ref}) * 0.8`,
+    ]);
+
+    return `GREATEST(${ranks.join(', ')})`;
+  }
+
+  private buildHeadlineQuery(queryRefs: string[]): string {
+    return queryRefs
+      .map((ref) => `websearch_to_tsquery('russian', ${ref})`)
+      .join(' || ');
   }
 
   async search(dto: SearchQueryDto): Promise<SearchResponse> {
@@ -50,104 +183,69 @@ export class SearchService {
     const offset = (page - 1) * limit;
 
     const variants = this.getSearchVariants(dto.q);
-    const primaryQuery = variants[0];
-    const altQuery = variants[1] ?? variants[0];
-
-    const filters: string[] = ['1=1'];
-    const params: (string | number)[] = [primaryQuery, altQuery, limit, offset];
-    let paramIndex = 5;
-
-    if (dto.year) {
-      filters.push(`w.year = $${String(paramIndex)}`);
-      params.push(dto.year);
-      paramIndex++;
-    }
-    if (dto.supervisorId) {
-      filters.push(`w."supervisorId" = $${String(paramIndex)}`);
-      params.push(dto.supervisorId);
-      paramIndex++;
-    }
-    if (dto.category) {
-      filters.push(`w.category = $${String(paramIndex)}`);
-      params.push(dto.category);
-      paramIndex++;
-    }
-    if (dto.minScore !== undefined) {
-      filters.push(`w."qualityScore" >= $${String(paramIndex)}`);
-      params.push(dto.minScore);
-      paramIndex++;
+    if (variants.length === 0) {
+      return {
+        data: [],
+        total: 0,
+        page,
+        limit,
+        totalPages: 0,
+      };
     }
 
-    const filterClause = filters.join(' AND ');
+    const queryRefs = variants.map((_, index) => `$${String(index + 1)}`);
+    const limitIndex = variants.length + 1;
+    const offsetIndex = variants.length + 2;
+    const searchFilter = this.buildFilters(dto, variants.length + 3);
+    const countFilter = this.buildFilters(dto, variants.length + 1);
+    const matchCondition = this.buildMatchCondition(queryRefs);
+    const rankExpression = this.buildRankExpression(queryRefs);
+    const headlineQuery = this.buildHeadlineQuery(queryRefs);
 
     const results = await this.prisma.$queryRawUnsafe<SearchResult[]>(
       `
+      ${this.searchableWorksCte()}
       SELECT
-        w.id,
-        w.title,
-        w.description,
-        w.annotation,
-        w.category,
-        COALESCE(w.tags, ARRAY[]::text[]) AS tags,
-        w.year,
-        w."qualityScore" AS "qualityScore",
-        u."fullName" AS "authorName",
-        s."fullName" AS "supervisorName",
-        GREATEST(
-          ts_rank_cd(w.search_vector, plainto_tsquery('russian', $1)),
-          ts_rank_cd(w.search_vector, plainto_tsquery('russian', $2)),
-          similarity(w.title, $1),
-          similarity(w.title, $2)
-        ) AS rank,
+        sw.id,
+        sw.title,
+        sw.description,
+        sw.annotation,
+        sw.category,
+        sw.tags,
+        sw.year,
+        sw."commissionReviewScore",
+        sw."authorName",
+        sw."supervisorName",
+        ${rankExpression} AS rank,
         ts_headline('russian',
-          COALESCE(w.annotation, w.description, ''),
-          plainto_tsquery('russian', $1),
+          sw.document_text,
+          ${headlineQuery},
           'MaxWords=50, MinWords=20, StartSel=<mark>, StopSel=</mark>'
         ) AS headline
-      FROM works w
-      JOIN users u ON w."authorId" = u.id
-      LEFT JOIN users s ON w."supervisorId" = s.id
-      WHERE (
-        w.search_vector @@ plainto_tsquery('russian', $1)
-        OR w.search_vector @@ plainto_tsquery('russian', $2)
-        OR similarity(w.title, $1) > 0.15
-        OR similarity(w.title, $2) > 0.15
-        OR w.title ILIKE '%' || $1 || '%'
-        OR w.title ILIKE '%' || $2 || '%'
-        OR w.annotation ILIKE '%' || $1 || '%'
-        OR w.annotation ILIKE '%' || $2 || '%'
-        OR w.description ILIKE '%' || $1 || '%'
-        OR w.description ILIKE '%' || $2 || '%'
-      )
-      AND (w."isPublic" = true OR w.status = 'PUBLISHED')
-      AND ${filterClause}
+      FROM searchable_works sw
+      WHERE (${matchCondition})
+      AND (sw."isPublic" = true OR sw.status = 'PUBLISHED')
+      AND ${searchFilter.clause}
       ORDER BY rank DESC
-      LIMIT $3 OFFSET $4
+      LIMIT $${String(limitIndex)} OFFSET $${String(offsetIndex)}
       `,
-      ...params,
+      ...variants,
+      limit,
+      offset,
+      ...searchFilter.params,
     );
 
     const countResult = await this.prisma.$queryRawUnsafe<{ count: bigint }[]>(
       `
+      ${this.searchableWorksCte()}
       SELECT COUNT(*) as count
-      FROM works w
-      WHERE (
-        w.search_vector @@ plainto_tsquery('russian', $1)
-        OR w.search_vector @@ plainto_tsquery('russian', $2)
-        OR similarity(w.title, $1) > 0.15
-        OR similarity(w.title, $2) > 0.15
-        OR w.title ILIKE '%' || $1 || '%'
-        OR w.title ILIKE '%' || $2 || '%'
-        OR w.annotation ILIKE '%' || $1 || '%'
-        OR w.annotation ILIKE '%' || $2 || '%'
-        OR w.description ILIKE '%' || $1 || '%'
-        OR w.description ILIKE '%' || $2 || '%'
-      )
-      AND (w."isPublic" = true OR w.status = 'PUBLISHED')
-      AND ${filterClause}
+      FROM searchable_works sw
+      WHERE (${matchCondition})
+      AND (sw."isPublic" = true OR sw.status = 'PUBLISHED')
+      AND ${countFilter.clause}
       `,
-      ...params.slice(0, 2),
-      ...params.slice(4),
+      ...variants,
+      ...countFilter.params,
     );
 
     const total = Number(countResult[0]?.count ?? 0);
@@ -158,37 +256,41 @@ export class SearchService {
       page,
       limit,
       totalPages: Math.ceil(total / limit),
-      convertedQuery: variants.length > 1 ? altQuery : undefined,
+      convertedQuery: variants.find((variant) => variant !== variants[0]),
     };
   }
 
   async suggest(dto: SuggestQueryDto): Promise<SuggestResult[]> {
     const variants = this.getSearchVariants(dto.q);
-    const primary = variants[0];
-    const alt = variants[1] ?? variants[0];
+    if (variants.length === 0) return [];
+
+    const queryRefs = variants.map((_, index) => `$${String(index + 1)}`);
+    const similarityExpression = `GREATEST(${queryRefs
+      .map((ref) => `similarity(title, ${ref})`)
+      .join(', ')})`;
+    const whereClause = queryRefs
+      .map(
+        (ref) => `
+          similarity(title, ${ref}) > 0.08
+          OR title ILIKE '%' || ${ref} || '%'
+        `,
+      )
+      .map((condition) => `(${condition})`)
+      .join(' OR ');
 
     const results = await this.prisma.$queryRawUnsafe<SuggestResult[]>(
       `
       SELECT
         id,
         title,
-        GREATEST(
-          similarity(title, $1),
-          similarity(title, $2)
-        ) AS similarity
+        ${similarityExpression} AS similarity
       FROM works
-      WHERE (
-        similarity(title, $1) > 0.08
-        OR similarity(title, $2) > 0.08
-        OR title ILIKE '%' || $1 || '%'
-        OR title ILIKE '%' || $2 || '%'
-      )
+      WHERE (${whereClause})
       AND ("isPublic" = true OR status = 'PUBLISHED')
       ORDER BY similarity DESC
       LIMIT 10
       `,
-      primary,
-      alt,
+      ...variants,
     );
 
     return results;

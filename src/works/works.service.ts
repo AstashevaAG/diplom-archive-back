@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { Role, User, WorkStatus, WorkStage, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma';
+import { NotificationsService } from '../notifications/notifications.service';
 import {
   CreateWorkDto,
   UpdateWorkDto,
@@ -19,13 +20,35 @@ import { PaginatedResult, WorkWithRelations } from './interfaces';
 const workInclude = {
   author: { select: { id: true, fullName: true, email: true } },
   supervisor: { select: { id: true, fullName: true, email: true } },
-  files: { select: { id: true, type: true, originalName: true, url: true } },
+  files: {
+    select: {
+      id: true,
+      type: true,
+      originalName: true,
+      url: true,
+      size: true,
+      version: true,
+      comment: true,
+      createdAt: true,
+    },
+    orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
+  },
   _count: { select: { reviews: true, comments: true } },
 } satisfies Prisma.WorkInclude;
 
 @Injectable()
 export class WorksService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
+
+  private canManageWork(work: { supervisorId: string | null }, user: User): boolean {
+    return (
+      user.role === Role.ADMIN ||
+      (user.role === Role.SUPERVISOR && work.supervisorId === user.id)
+    );
+  }
 
   async create(
     dto: CreateWorkDto,
@@ -86,9 +109,9 @@ export class WorksService {
     if (query.supervisorId) where.supervisorId = query.supervisorId;
     if (query.status) where.status = query.status;
     if (query.minScore !== undefined || query.maxScore !== undefined) {
-      where.qualityScore = {};
-      if (query.minScore !== undefined) where.qualityScore.gte = query.minScore;
-      if (query.maxScore !== undefined) where.qualityScore.lte = query.maxScore;
+      where.commissionReviewScore = {};
+      if (query.minScore !== undefined) where.commissionReviewScore.gte = query.minScore;
+      if (query.maxScore !== undefined) where.commissionReviewScore.lte = query.maxScore;
     }
 
     let orderBy: Prisma.WorkOrderByWithRelationInput;
@@ -97,10 +120,10 @@ export class WorksService {
         orderBy = { createdAt: 'asc' };
         break;
       case SortBy.SCORE_DESC:
-        orderBy = { qualityScore: 'desc' };
+        orderBy = { commissionReviewScore: 'desc' };
         break;
       case SortBy.SCORE_ASC:
-        orderBy = { qualityScore: 'asc' };
+        orderBy = { commissionReviewScore: 'asc' };
         break;
       default:
         orderBy = { createdAt: 'desc' };
@@ -213,11 +236,7 @@ export class WorksService {
       throw new NotFoundException('Работа не найдена');
     }
 
-    if (
-      work.authorId !== user.id &&
-      work.supervisorId !== user.id &&
-      user.role !== Role.ADMIN
-    ) {
+    if (!this.canManageWork(work, user)) {
       throw new ForbiddenException('Нет прав для редактирования');
     }
 
@@ -240,11 +259,7 @@ export class WorksService {
       throw new NotFoundException('Работа не найдена');
     }
 
-    if (
-      work.supervisorId !== user.id &&
-      work.authorId !== user.id &&
-      user.role !== Role.ADMIN
-    ) {
+    if (work.supervisorId !== user.id) {
       throw new ForbiddenException('Нет прав для изменения статуса');
     }
 
@@ -258,6 +273,17 @@ export class WorksService {
       data: updateData,
       include: workInclude,
     });
+
+    await this.notifyStatusChanged(
+      {
+        id: work.id,
+        title: work.title,
+        authorId: work.authorId,
+        supervisorId: work.supervisorId,
+      },
+      dto.status,
+      user,
+    );
 
     return updated as WorkWithRelations;
   }
@@ -298,6 +324,10 @@ export class WorksService {
       throw new NotFoundException('Работа не найдена');
     }
 
+    if (work.status === WorkStatus.PUBLISHED) {
+      throw new ForbiddenException('Этапы опубликованной работы нельзя изменять');
+    }
+
     if (
       work.authorId !== user.id &&
       work.supervisorId !== user.id &&
@@ -320,5 +350,49 @@ export class WorksService {
         completedAt: dto.isCompleted ? new Date() : null,
       },
     });
+  }
+
+  private async notifyStatusChanged(
+    work: {
+      id: string;
+      title: string;
+      authorId: string;
+      supervisorId: string | null;
+    },
+    status: WorkStatus,
+    actor: User,
+  ): Promise<void> {
+    const recipients = new Set<string>();
+    if (work.authorId !== actor.id) recipients.add(work.authorId);
+    if (work.supervisorId && work.supervisorId !== actor.id) {
+      recipients.add(work.supervisorId);
+    }
+
+    if (recipients.size === 0) return;
+
+    const isPublished = status === WorkStatus.PUBLISHED;
+    const title = isPublished
+      ? 'Работа опубликована'
+      : 'Изменён статус ВКР';
+    const message = isPublished
+      ? `Работа «${work.title}» опубликована в каталоге.`
+      : `Статус работы «${work.title}» изменён на ${status}.`;
+
+    await Promise.all(
+      [...recipients].map((userId) =>
+        this.notifications.create({
+          userId,
+          type: isPublished ? 'WORK_PUBLISHED' : 'WORK_STATUS_CHANGED',
+          title,
+          message,
+          data: {
+            workId: work.id,
+            status,
+            actorId: actor.id,
+            actorName: actor.fullName,
+          },
+        }),
+      ),
+    );
   }
 }

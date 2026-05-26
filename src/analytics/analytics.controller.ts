@@ -1,6 +1,7 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Res, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { Role } from '@prisma/client';
+import { Response } from 'express';
 import { AnalyticsService } from './analytics.service';
 import {
   TrendItem,
@@ -51,5 +52,31 @@ export class AnalyticsController {
   @ApiOperation({ summary: 'Сводный дашборд' })
   async getDashboard(): Promise<DashboardData> {
     return this.analyticsService.getDashboard();
+  }
+
+  @Get('reports/department.csv')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Экспорт отчёта кафедры в CSV для Excel' })
+  async exportDepartmentCsv(@Res() res: Response): Promise<void> {
+    const buffer = await this.analyticsService.buildDepartmentCsvReport();
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="department-report.csv"',
+    );
+    res.send(buffer);
+  }
+
+  @Get('reports/department.pdf')
+  @Roles(Role.ADMIN)
+  @ApiOperation({ summary: 'Экспорт отчёта кафедры в PDF' })
+  async exportDepartmentPdf(@Res() res: Response): Promise<void> {
+    const buffer = await this.analyticsService.buildDepartmentPdfReport();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="department-report.pdf"',
+    );
+    res.send(buffer);
   }
 }

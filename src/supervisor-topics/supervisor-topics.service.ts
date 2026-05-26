@@ -7,6 +7,7 @@ import {
 import {
   SupervisorTopic,
   TopicResponse,
+  TopicResponseMessage,
   TopicResponseStatus,
   WorkStatus,
   Role,
@@ -18,6 +19,10 @@ import {
   UpdateSupervisorTopicDto,
   RespondToTopicDto,
 } from './dto';
+
+export interface TopicResponseMessageWithAuthor extends TopicResponseMessage {
+  author: { id: string; fullName: string; avatarUrl: string | null };
+}
 
 @Injectable()
 export class SupervisorTopicsService {
@@ -72,6 +77,13 @@ export class SupervisorTopicsService {
                 email: true,
                 group: true,
                 avatarUrl: true,
+              },
+            },
+            messages: {
+              take: 1,
+              orderBy: { createdAt: 'desc' },
+              include: {
+                author: { select: { id: true, fullName: true, avatarUrl: true } },
               },
             },
           },
@@ -143,6 +155,16 @@ export class SupervisorTopicsService {
       },
     });
 
+    if (dto.message?.trim()) {
+      await this.prisma.topicResponseMessage.create({
+        data: {
+          text: dto.message.trim(),
+          authorId: studentId,
+          responseId: response.id,
+        },
+      });
+    }
+
     await this.notifications.create({
       userId: topic.supervisorId,
       type: 'TOPIC_RESPONSE_NEW',
@@ -175,9 +197,105 @@ export class SupervisorTopicsService {
             },
           },
         },
+        messages: {
+          take: 1,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            author: { select: { id: true, fullName: true, avatarUrl: true } },
+          },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
+  }
+
+  async getResponseMessages(
+    topicId: string,
+    responseId: string,
+    requesterId: string,
+  ): Promise<TopicResponseMessageWithAuthor[]> {
+    const response = await this.prisma.topicResponse.findUnique({
+      where: { id: responseId },
+      include: { topic: { select: { supervisorId: true } } },
+    });
+
+    if (!response || response.topicId !== topicId) {
+      throw new NotFoundException('Отклик не найден');
+    }
+
+    if (response.studentId !== requesterId && response.topic.supervisorId !== requesterId) {
+      throw new ForbiddenException('Нет доступа к диалогу');
+    }
+
+    return this.prisma.topicResponseMessage.findMany({
+      where: { responseId },
+      include: {
+        author: { select: { id: true, fullName: true, avatarUrl: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    }) as Promise<TopicResponseMessageWithAuthor[]>;
+  }
+
+  async sendResponseMessage(
+    topicId: string,
+    responseId: string,
+    authorId: string,
+    text: string,
+  ): Promise<TopicResponseMessageWithAuthor> {
+    const response = await this.prisma.topicResponse.findUnique({
+      where: { id: responseId },
+      include: {
+        student: { select: { id: true, fullName: true } },
+        topic: {
+          select: {
+            id: true,
+            title: true,
+            supervisorId: true,
+            supervisor: { select: { fullName: true } },
+          },
+        },
+      },
+    });
+
+    if (!response || response.topicId !== topicId) {
+      throw new NotFoundException('Отклик не найден');
+    }
+
+    if (response.studentId !== authorId && response.topic.supervisorId !== authorId) {
+      throw new ForbiddenException('Нет доступа к диалогу');
+    }
+
+    if (response.status !== TopicResponseStatus.PENDING) {
+      throw new BadRequestException(
+        'Диалог по отклику уже закрыт. Продолжите общение в рабочем пространстве.',
+      );
+    }
+
+    const cleanText = text.trim();
+    if (!cleanText) throw new BadRequestException('Сообщение не может быть пустым');
+
+    const message = await this.prisma.topicResponseMessage.create({
+      data: { text: cleanText, authorId, responseId },
+      include: {
+        author: { select: { id: true, fullName: true, avatarUrl: true } },
+      },
+    });
+
+    const recipientId =
+      authorId === response.studentId ? response.topic.supervisorId : response.studentId;
+
+    await this.notifications.create({
+      userId: recipientId,
+      type: 'TOPIC_RESPONSE_MESSAGE',
+      title: 'Новое сообщение по отклику',
+      message:
+        authorId === response.studentId
+          ? `Студент ${response.student.fullName} написал по теме «${response.topic.title}»`
+          : `Преподаватель ${response.topic.supervisor.fullName} написал по вашему отклику на тему «${response.topic.title}»`,
+      data: { topicId, responseId },
+    });
+
+    return message as TopicResponseMessageWithAuthor;
   }
 
   async acceptResponse(
@@ -199,12 +317,6 @@ export class SupervisorTopicsService {
     if (response.status !== TopicResponseStatus.PENDING)
       throw new BadRequestException('Отклик уже обработан');
 
-    const updated = await this.prisma.topicResponse.update({
-      where: { id: responseId },
-      data: { status: TopicResponseStatus.ACCEPTED },
-    });
-
-    // Создаем работу со статусом TOPIC_SELECTED, НЕ публичную
     const stages = [
       'Выбор и утверждение темы',
       'Сбор и анализ литературы',
@@ -214,24 +326,57 @@ export class SupervisorTopicsService {
       'Защита дипломной работы',
     ];
 
-    const work = await this.prisma.work.create({
-      data: {
-        title: topic.title,
-        annotation: topic.description,
-        status: WorkStatus.TOPIC_SELECTED,
-        isPublic: false,
-        authorId: response.studentId,
-        supervisorId: topic.supervisorId,
-      },
+    const storedResponseMessages = await this.prisma.topicResponseMessage.findMany({
+      where: { responseId },
+      orderBy: { createdAt: 'asc' },
     });
+    const responseMessages =
+      storedResponseMessages.length > 0 || !response.message?.trim()
+        ? storedResponseMessages
+        : [{
+            text: response.message.trim(),
+            authorId: response.studentId,
+            createdAt: response.createdAt,
+          }];
 
-    await this.prisma.workStage.createMany({
-      data: stages.map((name, idx) => ({
-        name,
-        workId: work.id,
-        isCompleted: idx === 0,
-        completedAt: idx === 0 ? new Date() : null,
-      })),
+    const { updated, work } = await this.prisma.$transaction(async (tx) => {
+      const updatedResponse = await tx.topicResponse.update({
+        where: { id: responseId },
+        data: { status: TopicResponseStatus.ACCEPTED },
+      });
+
+      const createdWork = await tx.work.create({
+        data: {
+          title: topic.title,
+          annotation: topic.description,
+          status: WorkStatus.TOPIC_SELECTED,
+          isPublic: false,
+          authorId: response.studentId,
+          supervisorId: topic.supervisorId,
+        },
+      });
+
+      await tx.workStage.createMany({
+        data: stages.map((name, idx) => ({
+          name,
+          workId: createdWork.id,
+          isCompleted: idx === 0,
+          completedAt: idx === 0 ? new Date() : null,
+        })),
+      });
+
+      if (responseMessages.length > 0) {
+        await tx.workMessage.createMany({
+          data: responseMessages.map((message) => ({
+            text: message.text,
+            authorId: message.authorId,
+            workId: createdWork.id,
+            createdAt: message.createdAt,
+          })),
+        });
+      }
+
+      return { updated: updatedResponse, work: createdWork };
     });
 
     await this.notifications.create({
@@ -286,6 +431,13 @@ export class SupervisorTopicsService {
         topic: {
           include: {
             supervisor: { select: { id: true, fullName: true, specialization: true } },
+          },
+        },
+        messages: {
+          take: 1,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            author: { select: { id: true, fullName: true, avatarUrl: true } },
           },
         },
       },

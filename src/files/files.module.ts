@@ -4,10 +4,12 @@ import { memoryStorage } from 'multer';
 import { FilesController } from './files.controller';
 import { FilesService } from './files.service';
 import { PrismaModule } from '../prisma';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
     PrismaModule,
+    NotificationsModule,
     MulterModule.register({
       storage: memoryStorage(),
       limits: {

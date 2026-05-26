@@ -1,4 +1,4 @@
-import { IsString, IsOptional, IsBoolean } from 'class-validator';
+import { IsString, IsOptional, IsBoolean, MinLength } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export class CreateSupervisorTopicDto {
@@ -44,4 +44,11 @@ export class RespondToTopicDto {
   @IsOptional()
   @IsString()
   message?: string;
+}
+
+export class SendTopicResponseMessageDto {
+  @ApiProperty()
+  @IsString()
+  @MinLength(1)
+  text!: string;
 }

@@ -4,6 +4,8 @@ import {
   Get,
   Delete,
   Param,
+  Query,
+  Body,
   UseGuards,
   UseInterceptors,
   UploadedFile,
@@ -20,6 +22,7 @@ import { User, Role } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards';
 import { CurrentUser } from '../auth/decorators';
 import { FilesService } from './files.service';
+import type { FileVersionCompareResult } from './files.service';
 import { PrismaService } from '../prisma';
 import { File as PrismaFile } from '@prisma/client';
 
@@ -39,6 +42,7 @@ export class FilesController {
   @UseInterceptors(FileInterceptor('file'))
   async uploadFile(
     @Param('workId') workId: string,
+    @Body('comment') comment: string | undefined,
     @UploadedFile() file: Express.Multer.File | undefined,
     @CurrentUser() user: User,
   ): Promise<PrismaFile> {
@@ -54,7 +58,31 @@ export class FilesController {
     ) {
       throw new ForbiddenException('Только участники работы могут загружать файлы');
     }
-    return this.filesService.uploadFile(workId, file);
+    return this.filesService.uploadFile(workId, file, user, comment);
+  }
+
+  @Get('works/:workId/versions')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'История версий файлов работы' })
+  async getVersions(
+    @Param('workId') workId: string,
+    @CurrentUser() user: User,
+  ): Promise<PrismaFile[]> {
+    return this.filesService.findVersions(workId, user);
+  }
+
+  @Get('works/:workId/compare')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Сравнить две версии файла работы' })
+  async compareVersions(
+    @Param('workId') workId: string,
+    @Query('from') fromFileId: string,
+    @Query('to') toFileId: string,
+    @CurrentUser() user: User,
+  ): Promise<FileVersionCompareResult> {
+    return this.filesService.compareVersions(workId, fromFileId, toFileId, user);
   }
 
   @Get(':id')

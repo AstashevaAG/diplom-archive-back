@@ -6,22 +6,35 @@ import {
 import { Review } from '@prisma/client';
 import { PrismaService } from '../prisma';
 import { CreateReviewDto, UpdateReviewDto } from './dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class ReviewsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   async create(
     workId: string,
     reviewerId: string,
     dto: CreateReviewDto,
   ): Promise<Review> {
-    const work = await this.prisma.work.findUnique({ where: { id: workId } });
+    const work = await this.prisma.work.findUnique({
+      where: { id: workId },
+      select: {
+        id: true,
+        title: true,
+        authorId: true,
+        supervisorId: true,
+      },
+    });
     if (!work) {
       throw new NotFoundException('Работа не найдена');
     }
 
     const totalScore = this.calculateScore(dto.criteria, dto.weights);
+    const isCommissionReview = work.supervisorId === reviewerId;
 
     const review = await this.prisma.review.create({
       data: {
@@ -31,23 +44,38 @@ export class ReviewsService {
         totalScore,
         reviewerId,
         workId,
+        isCommissionReview,
       },
     });
 
-    // Update work's quality score (average of all reviews)
+    // Update work scores: supervisor review, external reviews, and overall average
     await this.updateWorkQualityScore(workId);
+    await this.notifyReviewCreated(work, reviewerId, review);
 
     return review;
   }
 
-  async findByWork(workId: string): Promise<Review[]> {
-    return this.prisma.review.findMany({
+  async findByWork(workId: string): Promise<Array<Review & { reviewer: { id: string; fullName: string; role: string }; isCommissionReview: boolean }>> {
+    const work = await this.prisma.work.findUnique({
+      where: { id: workId },
+      select: { supervisorId: true },
+    });
+    if (!work) {
+      throw new NotFoundException('Работа не найдена');
+    }
+
+    const reviews = await this.prisma.review.findMany({
       where: { workId },
       include: {
-        reviewer: { select: { id: true, fullName: true } },
+        reviewer: { select: { id: true, fullName: true, role: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
+
+    return reviews.map((review) => ({
+      ...review,
+      isCommissionReview: review.reviewerId === work.supervisorId,
+    }));
   }
 
   async update(
@@ -67,10 +95,6 @@ export class ReviewsService {
       throw new ForbiddenException('Нет прав для редактирования');
     }
 
-    if (review.isFinalized) {
-      throw new ForbiddenException('Рецензия уже финализирована');
-    }
-
     const criteria = (dto.criteria ?? review.criteria) as Record<string, number>;
     const weights = (dto.weights ?? review.weights) as Record<string, number>;
     const totalScore = this.calculateScore(criteria, weights);
@@ -78,9 +102,9 @@ export class ReviewsService {
     const updated = await this.prisma.review.update({
       where: { id: reviewId },
       data: {
-        criteria: dto.criteria ?? undefined,
-        weights: dto.weights ?? undefined,
-        comment: dto.comment,
+        ...(dto.criteria !== undefined ? { criteria: dto.criteria } : {}),
+        ...(dto.weights !== undefined ? { weights: dto.weights } : {}),
+        comment: dto.comment ?? null,
         totalScore,
       },
     });
@@ -109,6 +133,29 @@ export class ReviewsService {
     });
   }
 
+  async delete(reviewId: string, userId: string): Promise<void> {
+    const review = await this.prisma.review.findUnique({
+      where: { id: reviewId },
+      select: { id: true, reviewerId: true, workId: true },
+    });
+
+    if (!review) {
+      throw new NotFoundException('Рецензия не найдена');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: { role: true },
+    });
+
+    if (review.reviewerId !== userId && user?.role !== 'ADMIN') {
+      throw new ForbiddenException('Нет прав для удаления');
+    }
+
+    await this.prisma.review.delete({ where: { id: reviewId } });
+    await this.updateWorkQualityScore(review.workId);
+  }
+
   private calculateScore(
     criteria: Record<string, number>,
     weights: Record<string, number>,
@@ -128,18 +175,80 @@ export class ReviewsService {
   }
 
   private async updateWorkQualityScore(workId: string): Promise<void> {
-    const reviews = await this.prisma.review.findMany({
-      where: { workId },
+    const work = await this.prisma.work.findUnique({
+      where: { id: workId },
+      select: { supervisorId: true },
     });
+    if (!work) return;
 
-    if (reviews.length === 0) return;
+    const reviews = await this.prisma.review.findMany({ where: { workId } });
 
-    const avgScore =
-      reviews.reduce((sum, r) => sum + r.totalScore, 0) / reviews.length;
+    if (reviews.length === 0) {
+      await this.prisma.work.update({
+        where: { id: workId },
+        data: {
+          commissionReviewScore: null,
+          externalReviewScore: null,
+        },
+      });
+      return;
+    }
+
+    const supervisorReviews = reviews.filter(
+      (review) => review.reviewerId === work.supervisorId,
+    );
+    const externalReviews = reviews.filter(
+      (review) => review.reviewerId !== work.supervisorId,
+    );
+    const supervisorAvg =
+      supervisorReviews.length > 0
+        ? supervisorReviews.reduce((sum, r) => sum + r.totalScore, 0) /
+          supervisorReviews.length
+        : null;
+    const externalAvg =
+      externalReviews.length > 0
+        ? externalReviews.reduce((sum, r) => sum + r.totalScore, 0) /
+          externalReviews.length
+        : null;
 
     await this.prisma.work.update({
       where: { id: workId },
-      data: { qualityScore: Math.round(avgScore * 100) / 100 },
+      data: {
+        commissionReviewScore:
+          supervisorAvg === null ? null : Math.round(supervisorAvg * 100) / 100,
+        externalReviewScore:
+          externalAvg === null ? null : Math.round(externalAvg * 100) / 100,
+      },
+    });
+  }
+
+  private async notifyReviewCreated(
+    work: {
+      id: string;
+      title: string;
+      authorId: string;
+      supervisorId: string | null;
+    },
+    reviewerId: string,
+    review: Review,
+  ): Promise<void> {
+    if (work.authorId === reviewerId) return;
+
+    const reviewer = await this.prisma.user.findUnique({
+      where: { id: reviewerId },
+      select: { fullName: true },
+    });
+
+    await this.notifications.create({
+      userId: work.authorId,
+      type: 'WORK_REVIEW_CREATED',
+      title: 'Получена рецензия',
+      message: `${reviewer?.fullName ?? 'Рецензент'} добавил(а) рецензию к работе «${work.title}» с итоговой оценкой ${review.totalScore}%.`,
+      data: {
+        workId: work.id,
+        reviewId: review.id,
+        reviewerId,
+      },
     });
   }
 }
