@@ -11,11 +11,16 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { PrismaService } from '../prisma';
 import { NotificationsService } from '../notifications/notifications.service';
+import { normalizeFileNameEncoding } from './file-name.utils';
 
 interface FileData {
   mimeType: string;
   originalName: string;
   path: string;
+}
+
+interface UploadFileOptions {
+  indexForSearch?: boolean;
 }
 
 export interface FileMetadataChange {
@@ -79,6 +84,7 @@ export class FilesService {
     file: Express.Multer.File,
     uploader: User,
     comment?: string,
+    options: UploadFileOptions = {},
   ): Promise<PrismaFile> {
     const work = await this.prisma.work.findUnique({
       where: { id: workId },
@@ -101,7 +107,8 @@ export class FilesService {
 
     const fileType = determineFileType(file.mimetype);
     const version = (latest?.version ?? 0) + 1;
-    const ext = path.extname(file.originalname);
+    const originalName = normalizeFileNameEncoding(file.originalname);
+    const ext = path.extname(originalName);
     const filename = `${workId}-v${version}-${Date.now()}${ext}`;
     const filePath = path.join(this.uploadDir, filename);
     const cleanComment = comment?.trim() || null;
@@ -111,7 +118,7 @@ export class FilesService {
     const savedFile = await this.prisma.file.create({
       data: {
         filename,
-        originalName: file.originalname,
+        originalName,
         mimeType: file.mimetype,
         size: file.size,
         type: fileType,
@@ -122,13 +129,15 @@ export class FilesService {
       },
     });
 
-    void this.extractTextForFile(
-      savedFile.id,
-      workId,
-      filePath,
-      file.mimetype,
-      file.originalname,
-    );
+    if (options.indexForSearch) {
+      void this.extractTextForFile(
+        savedFile.id,
+        workId,
+        filePath,
+        file.mimetype,
+        originalName,
+      );
+    }
 
     await this.notifyVersionUploaded(work, savedFile, uploader);
 
@@ -138,10 +147,12 @@ export class FilesService {
   async findVersions(workId: string, user: User): Promise<PrismaFile[]> {
     await this.assertWorkAccess(workId, user);
 
-    return this.prisma.file.findMany({
+    const files = await this.prisma.file.findMany({
       where: { workId },
       orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
     });
+
+    return files.map((file) => this.normalizeFileRecordName(file));
   }
 
   async compareVersions(
@@ -152,7 +163,7 @@ export class FilesService {
   ): Promise<FileVersionCompareResult> {
     const work = await this.assertWorkAccess(workId, user);
     if (work.supervisorId !== user.id && user.role !== Role.ADMIN) {
-      throw new ForbiddenException('Сравнение версий доступно руководителю');
+      throw new ForbiddenException('Сравнение версий доступно преподавателю');
     }
     if (fromFileId === toFileId) {
       throw new BadRequestException('Выберите две разные версии');
@@ -161,17 +172,25 @@ export class FilesService {
     const files = await this.prisma.file.findMany({
       where: { id: { in: [fromFileId, toFileId] }, workId },
     });
-    const from = files.find((f) => f.id === fromFileId);
-    const to = files.find((f) => f.id === toFileId);
+    const fromRecord = files.find((f) => f.id === fromFileId);
+    const toRecord = files.find((f) => f.id === toFileId);
+    const from = fromRecord && this.normalizeFileRecordName(fromRecord);
+    const to = toRecord && this.normalizeFileRecordName(toRecord);
     if (!from || !to) {
       throw new NotFoundException('Одна из версий не найдена');
     }
+    if (from.type !== FileType.PDF || to.type !== FileType.PDF) {
+      throw new BadRequestException('Сравнение доступно только для PDF-файлов');
+    }
+
+    const fromText = await this.getTextForComparison(from);
+    const toText = await this.getTextForComparison(to);
 
     return {
       from,
       to,
       metadataChanges: this.buildMetadataChanges(from, to),
-      textDiff: this.buildTextDiff(from.textContent, to.textContent),
+      textDiff: this.buildTextDiff(fromText, toText),
     };
   }
 
@@ -188,7 +207,7 @@ export class FilesService {
 
     return {
       mimeType: file.mimeType,
-      originalName: file.originalName,
+      originalName: normalizeFileNameEncoding(file.originalName),
       path: path.resolve(filePath),
     };
   }
@@ -281,7 +300,11 @@ export class FilesService {
     originalName: string,
   ): Promise<void> {
     try {
-      const text = await this.extractPlainText(filePath, mimeType, originalName);
+      const text = await this.extractPlainText(
+        filePath,
+        mimeType,
+        originalName,
+      );
       if (!text) return;
 
       await this.prisma.file.update({
@@ -291,8 +314,7 @@ export class FilesService {
 
       await this.refreshWorkFullText(workId);
     } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Unknown error';
+      const message = error instanceof Error ? error.message : 'Unknown error';
       console.error(`Text extraction failed for file ${fileId}: ${message}`);
     }
   }
@@ -318,6 +340,27 @@ export class FilesService {
       where: { id: workId },
       data: { fullText: fullText || null },
     });
+  }
+
+  private async getTextForComparison(file: PrismaFile): Promise<string | null> {
+    if (file.textContent?.trim()) {
+      return file.textContent;
+    }
+
+    const filePath = path.join(this.uploadDir, file.filename);
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+
+    try {
+      return await this.extractPlainText(
+        filePath,
+        file.mimeType,
+        file.originalName,
+      );
+    } catch {
+      return null;
+    }
   }
 
   private async extractPlainText(
@@ -370,6 +413,13 @@ export class FilesService {
       .replace(/[ \t]+\n/g, '\n')
       .replace(/\n{3,}/g, '\n\n')
       .trim();
+  }
+
+  private normalizeFileRecordName(file: PrismaFile): PrismaFile {
+    return {
+      ...file,
+      originalName: normalizeFileNameEncoding(file.originalName),
+    };
   }
 
   private buildMetadataChanges(
@@ -452,7 +502,8 @@ export class FilesService {
       available: true,
       addedCount: ordered.filter((item) => item.type === 'added').length,
       removedCount: ordered.filter((item) => item.type === 'removed').length,
-      unchangedCount: ordered.filter((item) => item.type === 'unchanged').length,
+      unchangedCount: ordered.filter((item) => item.type === 'unchanged')
+        .length,
       items: ordered.slice(0, 180),
     };
   }

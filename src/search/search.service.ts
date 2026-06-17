@@ -23,6 +23,10 @@ interface SqlFilter {
 export class SearchService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private normalizeSqlText(expression: string): string {
+    return `lower(translate(${expression}, 'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ', 'абвгдеёжзийклмнопрстуфхцчшщъыьэюя'))`;
+  }
+
   private normalizeQuery(text: string): string {
     return text.replace(/\s+/g, ' ').trim();
   }
@@ -104,41 +108,28 @@ export class SearchService {
           w."isPublic",
           u."fullName" AS "authorName",
           s."fullName" AS "supervisorName",
-          COALESCE(
-            string_agg(f."textContent", E'\\n\\n' ORDER BY f.version DESC, f."createdAt" DESC)
-              FILTER (WHERE f."textContent" IS NOT NULL AND f."textContent" <> ''),
-            ''
-          ) AS file_text,
+          array_to_string(COALESCE(w.tags, ARRAY[]::text[]), ' ') AS tags_text,
+          COALESCE(w."fullText", '') AS file_text,
           concat_ws(
             E'\\n\\n',
             w.title,
             w.description,
             w.annotation,
-            w."fullText",
-            COALESCE(
-              string_agg(f."textContent", E'\\n\\n' ORDER BY f.version DESC, f."createdAt" DESC)
-                FILTER (WHERE f."textContent" IS NOT NULL AND f."textContent" <> ''),
-              ''
-            )
+            w.category,
+            array_to_string(COALESCE(w.tags, ARRAY[]::text[]), ' '),
+            u."fullName",
+            s."fullName",
+            w.year::text,
+            w."fullText"
           ) AS document_text,
           (
-            setweight(to_tsvector('russian', concat_ws(' ', COALESCE(w.title, ''), COALESCE(array_to_string(w.tags, ' '), ''))), 'A') ||
-            setweight(to_tsvector('russian', concat_ws(' ', COALESCE(w.description, ''), COALESCE(w.annotation, ''))), 'B') ||
-            setweight(to_tsvector('russian', concat_ws(
-              E'\\n\\n',
-              COALESCE(w."fullText", ''),
-              COALESCE(
-                string_agg(f."textContent", E'\\n\\n' ORDER BY f.version DESC, f."createdAt" DESC)
-                  FILTER (WHERE f."textContent" IS NOT NULL AND f."textContent" <> ''),
-                ''
-              )
-            )), 'C')
+            setweight(to_tsvector('russian', concat_ws(' ', COALESCE(w.title, ''), COALESCE(array_to_string(w.tags, ' '), ''), COALESCE(w.category, ''))), 'A') ||
+            setweight(to_tsvector('russian', concat_ws(' ', COALESCE(w.description, ''), COALESCE(w.annotation, ''), COALESCE(u."fullName", ''), COALESCE(s."fullName", ''), COALESCE(w.year::text, ''))), 'B') ||
+            setweight(to_tsvector('russian', COALESCE(w."fullText", '')), 'C')
           ) AS document_vector
         FROM works w
         JOIN users u ON w."authorId" = u.id
         LEFT JOIN users s ON w."supervisorId" = s.id
-        LEFT JOIN files f ON f."workId" = w.id
-        GROUP BY w.id, u."fullName", s."fullName"
       )
     `;
   }
@@ -146,14 +137,23 @@ export class SearchService {
   private buildMatchCondition(queryRefs: string[]): string {
     const perVariant = queryRefs.map(
       (ref) => `
-        sw.document_vector @@ websearch_to_tsquery('russian', ${ref})
-        OR sw.title ILIKE '%' || ${ref} || '%'
-        OR COALESCE(sw.description, '') ILIKE '%' || ${ref} || '%'
-        OR COALESCE(sw.annotation, '') ILIKE '%' || ${ref} || '%'
-        OR sw.file_text ILIKE '%' || ${ref} || '%'
-        OR similarity(sw.title, ${ref}) > 0.12
-        OR similarity(COALESCE(sw.description, ''), ${ref}) > 0.08
-        OR similarity(COALESCE(sw.annotation, ''), ${ref}) > 0.08
+        sw.document_vector @@ websearch_to_tsquery('russian', ${this.normalizeSqlText(ref)})
+        OR ${this.normalizeSqlText('sw.title')} LIKE '%' || ${this.normalizeSqlText(ref)} || '%'
+        OR ${this.normalizeSqlText("COALESCE(sw.description, '')")} LIKE '%' || ${this.normalizeSqlText(ref)} || '%'
+        OR ${this.normalizeSqlText("COALESCE(sw.annotation, '')")} LIKE '%' || ${this.normalizeSqlText(ref)} || '%'
+        OR ${this.normalizeSqlText("COALESCE(sw.category, '')")} LIKE '%' || ${this.normalizeSqlText(ref)} || '%'
+        OR ${this.normalizeSqlText("COALESCE(sw.tags_text, '')")} LIKE '%' || ${this.normalizeSqlText(ref)} || '%'
+        OR ${this.normalizeSqlText('COALESCE(sw."authorName", \'\')')} LIKE '%' || ${this.normalizeSqlText(ref)} || '%'
+        OR ${this.normalizeSqlText('COALESCE(sw."supervisorName", \'\')')} LIKE '%' || ${this.normalizeSqlText(ref)} || '%'
+        OR ${this.normalizeSqlText("COALESCE(sw.year::text, '')")} LIKE '%' || ${this.normalizeSqlText(ref)} || '%'
+        OR ${this.normalizeSqlText('sw.file_text')} LIKE '%' || ${this.normalizeSqlText(ref)} || '%'
+        OR similarity(${this.normalizeSqlText('sw.title')}, ${this.normalizeSqlText(ref)}) > 0.12
+        OR similarity(${this.normalizeSqlText("COALESCE(sw.description, '')")}, ${this.normalizeSqlText(ref)}) > 0.08
+        OR similarity(${this.normalizeSqlText("COALESCE(sw.annotation, '')")}, ${this.normalizeSqlText(ref)}) > 0.08
+        OR similarity(${this.normalizeSqlText("COALESCE(sw.category, '')")}, ${this.normalizeSqlText(ref)}) > 0.08
+        OR similarity(${this.normalizeSqlText("COALESCE(sw.tags_text, '')")}, ${this.normalizeSqlText(ref)}) > 0.08
+        OR similarity(${this.normalizeSqlText('COALESCE(sw."authorName", \'\')')}, ${this.normalizeSqlText(ref)}) > 0.08
+        OR similarity(${this.normalizeSqlText('COALESCE(sw."supervisorName", \'\')')}, ${this.normalizeSqlText(ref)}) > 0.08
       `,
     );
 
@@ -162,10 +162,22 @@ export class SearchService {
 
   private buildRankExpression(queryRefs: string[]): string {
     const ranks = queryRefs.flatMap((ref) => [
-      `ts_rank_cd(sw.document_vector, websearch_to_tsquery('russian', ${ref}))`,
-      `similarity(sw.title, ${ref})`,
-      `similarity(COALESCE(sw.description, ''), ${ref}) * 0.8`,
-      `similarity(COALESCE(sw.annotation, ''), ${ref}) * 0.8`,
+      `ts_rank_cd(sw.document_vector, websearch_to_tsquery('russian', ${this.normalizeSqlText(ref)}))`,
+      `CASE WHEN ${this.normalizeSqlText('sw.title')} LIKE '%' || ${this.normalizeSqlText(ref)} || '%' THEN 3 ELSE 0 END`,
+      `CASE WHEN ${this.normalizeSqlText("COALESCE(sw.description, '')")} LIKE '%' || ${this.normalizeSqlText(ref)} || '%' THEN 2 ELSE 0 END`,
+      `CASE WHEN ${this.normalizeSqlText("COALESCE(sw.annotation, '')")} LIKE '%' || ${this.normalizeSqlText(ref)} || '%' THEN 2 ELSE 0 END`,
+      `CASE WHEN ${this.normalizeSqlText("COALESCE(sw.category, '')")} LIKE '%' || ${this.normalizeSqlText(ref)} || '%' THEN 1.8 ELSE 0 END`,
+      `CASE WHEN ${this.normalizeSqlText("COALESCE(sw.tags_text, '')")} LIKE '%' || ${this.normalizeSqlText(ref)} || '%' THEN 1.8 ELSE 0 END`,
+      `CASE WHEN ${this.normalizeSqlText('COALESCE(sw."authorName", \'\')')} LIKE '%' || ${this.normalizeSqlText(ref)} || '%' THEN 1.7 ELSE 0 END`,
+      `CASE WHEN ${this.normalizeSqlText('COALESCE(sw."supervisorName", \'\')')} LIKE '%' || ${this.normalizeSqlText(ref)} || '%' THEN 1.7 ELSE 0 END`,
+      `CASE WHEN ${this.normalizeSqlText("COALESCE(sw.file_text, '')")} LIKE '%' || ${this.normalizeSqlText(ref)} || '%' THEN 1.2 ELSE 0 END`,
+      `similarity(${this.normalizeSqlText('sw.title')}, ${this.normalizeSqlText(ref)})`,
+      `similarity(${this.normalizeSqlText("COALESCE(sw.description, '')")}, ${this.normalizeSqlText(ref)}) * 0.8`,
+      `similarity(${this.normalizeSqlText("COALESCE(sw.annotation, '')")}, ${this.normalizeSqlText(ref)}) * 0.8`,
+      `similarity(${this.normalizeSqlText("COALESCE(sw.category, '')")}, ${this.normalizeSqlText(ref)}) * 0.7`,
+      `similarity(${this.normalizeSqlText("COALESCE(sw.tags_text, '')")}, ${this.normalizeSqlText(ref)}) * 0.7`,
+      `similarity(${this.normalizeSqlText('COALESCE(sw."authorName", \'\')')}, ${this.normalizeSqlText(ref)}) * 0.7`,
+      `similarity(${this.normalizeSqlText('COALESCE(sw."supervisorName", \'\')')}, ${this.normalizeSqlText(ref)}) * 0.7`,
     ]);
 
     return `GREATEST(${ranks.join(', ')})`;
@@ -173,7 +185,7 @@ export class SearchService {
 
   private buildHeadlineQuery(queryRefs: string[]): string {
     return queryRefs
-      .map((ref) => `websearch_to_tsquery('russian', ${ref})`)
+      .map((ref) => `websearch_to_tsquery('russian', ${this.normalizeSqlText(ref)})`)
       .join(' || ');
   }
 
@@ -256,7 +268,9 @@ export class SearchService {
       page,
       limit,
       totalPages: Math.ceil(total / limit),
-      convertedQuery: variants.find((variant) => variant !== variants[0]),
+      convertedQuery: this.hasLatinChars(variants[0])
+        ? variants.find((variant) => variant !== variants[0])
+        : undefined,
     };
   }
 
@@ -266,13 +280,13 @@ export class SearchService {
 
     const queryRefs = variants.map((_, index) => `$${String(index + 1)}`);
     const similarityExpression = `GREATEST(${queryRefs
-      .map((ref) => `similarity(title, ${ref})`)
+      .map((ref) => `similarity(${this.normalizeSqlText('title')}, ${this.normalizeSqlText(ref)})`)
       .join(', ')})`;
     const whereClause = queryRefs
       .map(
         (ref) => `
-          similarity(title, ${ref}) > 0.08
-          OR title ILIKE '%' || ${ref} || '%'
+          similarity(${this.normalizeSqlText('title')}, ${this.normalizeSqlText(ref)}) > 0.08
+          OR ${this.normalizeSqlText('title')} LIKE '%' || ${this.normalizeSqlText(ref)} || '%'
         `,
       )
       .map((condition) => `(${condition})`)

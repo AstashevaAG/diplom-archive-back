@@ -12,7 +12,7 @@ export class CreateTopicRequestDto {
   @IsOptional()
   justification?: string;
 
-  @ApiProperty({ description: 'ID выбранного руководителя' })
+  @ApiProperty({ description: 'ID выбранного преподавателя' })
   @IsString()
   @IsNotEmpty()
   supervisorId!: string;

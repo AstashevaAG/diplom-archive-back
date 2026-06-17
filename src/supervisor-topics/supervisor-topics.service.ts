@@ -317,13 +317,23 @@ export class SupervisorTopicsService {
     if (response.status !== TopicResponseStatus.PENDING)
       throw new BadRequestException('Отклик уже обработан');
 
+    const otherPendingResponses = await this.prisma.topicResponse.findMany({
+      where: {
+        topicId,
+        id: { not: responseId },
+        status: TopicResponseStatus.PENDING,
+      },
+      select: { id: true, studentId: true },
+    });
+
     const stages = [
-      'Выбор и утверждение темы',
-      'Сбор и анализ литературы',
-      'Написание черновика',
-      'Рецензирование руководителем',
-      'Подготовка к защите',
-      'Защита дипломной работы',
+      'Тема выбрана',
+      'Тема утверждена',
+      'Работа в процессе написания',
+      'Финальная проверка',
+      'Требуются доработки',
+      'Допущена к защите',
+      'Работа завершена',
     ];
 
     const storedResponseMessages = await this.prisma.topicResponseMessage.findMany({
@@ -345,6 +355,20 @@ export class SupervisorTopicsService {
         data: { status: TopicResponseStatus.ACCEPTED },
       });
 
+      await tx.topicResponse.updateMany({
+        where: {
+          topicId,
+          id: { not: responseId },
+          status: TopicResponseStatus.PENDING,
+        },
+        data: { status: TopicResponseStatus.REJECTED },
+      });
+
+      await tx.supervisorTopic.update({
+        where: { id: topicId },
+        data: { isActive: false },
+      });
+
       const createdWork = await tx.work.create({
         data: {
           title: topic.title,
@@ -353,6 +377,7 @@ export class SupervisorTopicsService {
           isPublic: false,
           authorId: response.studentId,
           supervisorId: topic.supervisorId,
+          topicResponseId: responseId,
         },
       });
 
@@ -386,6 +411,18 @@ export class SupervisorTopicsService {
       message: `Преподаватель принял ваш отклик на тему «${topic.title}». Работа создана!`,
       data: { topicId, workId: work.id, responseId },
     });
+
+    await Promise.all(
+      otherPendingResponses.map((pendingResponse) =>
+        this.notifications.create({
+          userId: pendingResponse.studentId,
+          type: 'TOPIC_RESPONSE_REJECTED',
+          title: 'Тема уже занята',
+          message: `Преподаватель выбрал другого студента на тему «${topic.title}»`,
+          data: { topicId, responseId: pendingResponse.id },
+        }),
+      ),
+    );
 
     return updated;
   }
@@ -426,13 +463,26 @@ export class SupervisorTopicsService {
 
   async getMyResponses(studentId: string): Promise<TopicResponse[]> {
     return this.prisma.topicResponse.findMany({
-      where: { studentId },
+      where: {
+        studentId,
+        OR: [
+          {
+            status: TopicResponseStatus.PENDING,
+            topic: { isActive: true },
+          },
+          {
+            status: TopicResponseStatus.ACCEPTED,
+            work: { isNot: null },
+          },
+        ],
+      },
       include: {
         topic: {
           include: {
             supervisor: { select: { id: true, fullName: true, specialization: true } },
           },
         },
+        work: { select: { id: true, title: true } },
         messages: {
           take: 1,
           orderBy: { createdAt: 'desc' },

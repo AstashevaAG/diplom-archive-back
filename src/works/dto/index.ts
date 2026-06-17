@@ -60,10 +60,10 @@ export class CreateWorkDto {
   @IsOptional()
   year?: number;
 
-  @ApiPropertyOptional()
+  @ApiProperty({ description: 'ID преподавателя, которому отправляется запрос' })
   @IsString()
-  @IsOptional()
-  supervisorId?: string;
+  @IsNotEmpty()
+  supervisorId!: string;
 }
 
 export class UpdateWorkDto {

@@ -30,7 +30,7 @@ export class SupervisorTopicsController {
   @Post()
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Создать предложение темы (руководитель)' })
+  @ApiOperation({ summary: 'Создать предложение темы (преподаватель)' })
   async create(
     @Body() dto: CreateSupervisorTopicDto,
     @CurrentUser() user: User,
@@ -52,7 +52,7 @@ export class SupervisorTopicsController {
   @Get('my')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Мои темы с откликами (руководитель)' })
+  @ApiOperation({ summary: 'Мои темы с откликами (преподаватель)' })
   async findMy(@CurrentUser() user: User): Promise<SupervisorTopic[]> {
     return this.supervisorTopicsService.findMy(user.id);
   }
@@ -103,7 +103,7 @@ export class SupervisorTopicsController {
   @Get(':id/responses')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Отклики на тему (руководитель)' })
+  @ApiOperation({ summary: 'Отклики на тему (преподаватель)' })
   async getResponses(
     @Param('id') topicId: string,
     @CurrentUser() user: User,

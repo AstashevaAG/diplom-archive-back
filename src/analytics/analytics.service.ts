@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common';
-import { Role } from '@prisma/client';
+import { Role, WorkStatus } from '@prisma/client';
+import { existsSync } from 'node:fs';
+import PDFDocument from 'pdfkit';
 import { PrismaService } from '../prisma';
 import {
   TrendItem,
@@ -16,6 +18,16 @@ interface DepartmentReportData {
   categoryRows: { category: string; count: number }[];
   supervisorRows: SupervisorStats[];
 }
+
+const PDF_FONT_CANDIDATES = [
+  process.env.PDF_FONT_PATH,
+  '/System/Library/Fonts/Supplemental/Arial.ttf',
+  '/System/Library/Fonts/Supplemental/Times New Roman.ttf',
+  '/Library/Fonts/Arial.ttf',
+  '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+  '/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf',
+  'C:\\Windows\\Fonts\\arial.ttf',
+].filter((path): path is string => Boolean(path));
 
 @Injectable()
 export class AnalyticsService {
@@ -110,11 +122,38 @@ export class AnalyticsService {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const [totalWorks, totalUsers, totalSupervisors, avgResult, recentWorks] =
+    const [
+      totalWorks,
+      totalUsers,
+      totalSupervisors,
+      studentsWithoutWorkRows,
+      statusGroups,
+      avgResult,
+      recentWorks,
+    ] =
       await Promise.all([
         this.prisma.work.count(),
         this.prisma.user.count(),
         this.prisma.user.count({ where: { role: Role.SUPERVISOR } }),
+        this.prisma.user.findMany({
+          where: {
+            role: Role.STUDENT,
+            worksAsAuthor: { none: {} },
+          },
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            group: true,
+          },
+          orderBy: { fullName: 'asc' },
+        }),
+        this.prisma.work.groupBy({
+          by: ['status'],
+          _count: { id: true },
+          where: { status: { not: WorkStatus.ARCHIVED } },
+          orderBy: { status: 'asc' },
+        }),
         this.prisma.work.aggregate({
           _avg: { commissionReviewScore: true },
           where: { commissionReviewScore: { not: null } },
@@ -128,9 +167,15 @@ export class AnalyticsService {
       totalWorks,
       totalUsers,
       totalSupervisors,
+      studentsWithoutWorks: studentsWithoutWorkRows.length,
       avgQualityScore:
         Math.round((avgResult._avg.commissionReviewScore ?? 0) * 100) / 100,
       recentWorks,
+      statusRows: statusGroups.map((row) => ({
+        status: row.status,
+        count: row._count.id,
+      })),
+      studentsWithoutWorkRows,
     };
   }
 
@@ -144,14 +189,21 @@ export class AnalyticsService {
     lines.push(this.csvRow(['Показатель', 'Значение']));
     lines.push(this.csvRow(['Всего работ', String(data.dashboard.totalWorks)]));
     lines.push(this.csvRow(['Пользователей', String(data.dashboard.totalUsers)]));
-    lines.push(this.csvRow(['Руководителей', String(data.dashboard.totalSupervisors)]));
+    lines.push(this.csvRow(['Преподавателей', String(data.dashboard.totalSupervisors)]));
     lines.push(this.csvRow(['Средняя оценка', `${data.dashboard.avgQualityScore}%`]));
     lines.push(this.csvRow(['Новых работ за 30 дней', String(data.dashboard.recentWorks)]));
+    lines.push(this.csvRow(['Студентов без работы', String(data.dashboard.studentsWithoutWorks)]));
     lines.push('');
     lines.push(this.csvRow(['Работы по статусам']));
     lines.push(this.csvRow(['Статус', 'Количество']));
     data.statusRows.forEach((row) =>
       lines.push(this.csvRow([row.status, String(row.count)])),
+    );
+    lines.push('');
+    lines.push(this.csvRow(['Студенты без работы']));
+    lines.push(this.csvRow(['ФИО', 'Email', 'Группа']));
+    data.dashboard.studentsWithoutWorkRows.forEach((student) =>
+      lines.push(this.csvRow([student.fullName, student.email, student.group ?? ''])),
     );
     lines.push('');
     lines.push(this.csvRow(['Работы по годам']));
@@ -166,8 +218,8 @@ export class AnalyticsService {
       lines.push(this.csvRow([row.category, String(row.count)])),
     );
     lines.push('');
-    lines.push(this.csvRow(['Статистика руководителей']));
-    lines.push(this.csvRow(['Руководитель', 'Работ', 'Средняя оценка']));
+    lines.push(this.csvRow(['Статистика преподавателей']));
+    lines.push(this.csvRow(['Преподаватель', 'Работ', 'Средняя оценка']));
     data.supervisorRows.forEach((row) =>
       lines.push(
         this.csvRow([
@@ -189,12 +241,18 @@ export class AnalyticsService {
       '',
       `Всего работ: ${data.dashboard.totalWorks}`,
       `Пользователей: ${data.dashboard.totalUsers}`,
-      `Руководителей: ${data.dashboard.totalSupervisors}`,
+      `Преподавателей: ${data.dashboard.totalSupervisors}`,
       `Средняя оценка: ${data.dashboard.avgQualityScore}%`,
       `Новых работ за 30 дней: ${data.dashboard.recentWorks}`,
+      `Студентов без работы: ${data.dashboard.studentsWithoutWorks}`,
       '',
       'Работы по статусам:',
       ...data.statusRows.map((row) => `- ${row.status}: ${row.count}`),
+      '',
+      'Студенты без работы:',
+      ...data.dashboard.studentsWithoutWorkRows.map((student) =>
+        `- ${student.fullName}, ${student.email}${student.group ? `, ${student.group}` : ''}`,
+      ),
       '',
       'Работы по годам:',
       ...data.yearRows.map((row) => `- ${row.year}: ${row.count}`),
@@ -202,7 +260,7 @@ export class AnalyticsService {
       'Популярные категории:',
       ...data.categoryRows.map((row) => `- ${row.category}: ${row.count}`),
       '',
-      'Статистика руководителей:',
+      'Статистика преподавателей:',
       ...data.supervisorRows.map((row) =>
         `- ${row.supervisorName}: ${row.totalWorks} работ, средняя оценка ${row.avgScore > 0 ? `${row.avgScore}%` : 'нет данных'}`,
       ),
@@ -261,85 +319,55 @@ export class AnalyticsService {
       .join(';');
   }
 
-  private createSimplePdf(lines: string[]): Buffer {
-    const wrappedLines = lines.flatMap((line) => this.wrapPdfLine(line, 86));
-    const pageSize = 42;
-    const pages: string[][] = [];
-    for (let i = 0; i < wrappedLines.length; i += pageSize) {
-      pages.push(wrappedLines.slice(i, i + pageSize));
-    }
-    if (pages.length === 0) pages.push(['Отчёт пуст']);
-
-    const objects: string[] = [];
-    objects[1] = '<< /Type /Catalog /Pages 2 0 R >>';
-    objects[3] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>';
-
-    const pageIds: number[] = [];
-    let nextObjectId = 4;
-    for (const pageLines of pages) {
-      const content = pageLines
-        .map((line, index) => {
-          const y = 800 - index * 17;
-          return `BT /F1 10 Tf 48 ${y} Td <${this.toPdfUtf16Hex(line)}> Tj ET`;
-        })
-        .join('\n');
-      const contentId = nextObjectId;
-      nextObjectId += 1;
-      const pageId = nextObjectId;
-      nextObjectId += 1;
-      objects[contentId] =
-        `<< /Length ${Buffer.byteLength(content, 'utf8')} >>\nstream\n${content}\nendstream`;
-      objects[pageId] =
-        `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 3 0 R >> >> /Contents ${contentId} 0 R >>`;
-      pageIds.push(pageId);
+  private createSimplePdf(lines: string[]): Promise<Buffer> {
+    const fontPath = PDF_FONT_CANDIDATES.find((path) => existsSync(path));
+    if (!fontPath) {
+      throw new Error(
+        'Не найден шрифт для PDF-отчёта. Укажите путь к TTF/OTF с кириллицей в PDF_FONT_PATH.',
+      );
     }
 
-    objects[2] =
-      `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(' ')}] /Count ${pageIds.length} >>`;
+    return new Promise((resolve, reject) => {
+      const doc = new PDFDocument({
+        margin: 48,
+        size: 'A4',
+        bufferPages: true,
+        info: {
+          Title: 'Отчёт кафедры по архиву ВКР',
+          Author: 'Diplom Archive',
+        },
+      });
+      const chunks: Buffer[] = [];
 
-    let pdf = '%PDF-1.4\n';
-    const offsets: number[] = [0];
-    for (let id = 1; id < objects.length; id += 1) {
-      offsets[id] = Buffer.byteLength(pdf, 'utf8');
-      pdf += `${id} 0 obj\n${objects[id]}\nendobj\n`;
-    }
-    const xrefStart = Buffer.byteLength(pdf, 'utf8');
-    pdf += `xref\n0 ${objects.length}\n0000000000 65535 f \n`;
-    for (let id = 1; id < objects.length; id += 1) {
-      pdf += `${String(offsets[id]).padStart(10, '0')} 00000 n \n`;
-    }
-    pdf += `trailer\n<< /Size ${objects.length} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+      doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+      doc.on('end', () => resolve(Buffer.concat(chunks)));
+      doc.on('error', reject);
 
-    return Buffer.from(pdf, 'utf8');
-  }
+      doc.registerFont('ReportFont', fontPath);
+      doc.font('ReportFont').fontSize(15).text(lines[0] ?? 'Отчёт кафедры', {
+        align: 'left',
+      });
+      doc.moveDown(0.5);
+      doc.fontSize(10);
 
-  private wrapPdfLine(line: string, maxLength: number): string[] {
-    if (!line) return [''];
-    const words = line.split(' ');
-    const result: string[] = [];
-    let current = '';
-    for (const word of words) {
-      const next = current ? `${current} ${word}` : word;
-      if (next.length > maxLength && current) {
-        result.push(current);
-        current = word;
-      } else {
-        current = next;
-      }
-    }
-    if (current) result.push(current);
-    return result;
-  }
+      lines.slice(1).forEach((line) => {
+        if (!line) {
+          doc.moveDown(0.5);
+          return;
+        }
+        const isSectionHeader = !line.includes(':') && !line.startsWith('- ');
+        doc
+          .fontSize(isSectionHeader ? 12 : 10)
+          .text(line, {
+            width: 499,
+            lineGap: 3,
+          });
+        if (isSectionHeader) {
+          doc.moveDown(0.25);
+        }
+      });
 
-  private toPdfUtf16Hex(text: string): string {
-    const buffer = Buffer.alloc(2 + text.length * 2);
-    buffer[0] = 0xfe;
-    buffer[1] = 0xff;
-    for (let i = 0; i < text.length; i += 1) {
-      const code = text.charCodeAt(i);
-      buffer[2 + i * 2] = code >> 8;
-      buffer[3 + i * 2] = code & 0xff;
-    }
-    return buffer.toString('hex').toUpperCase();
+      doc.end();
+    });
   }
 }

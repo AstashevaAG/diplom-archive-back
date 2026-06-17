@@ -16,6 +16,7 @@ import { WorkMessagesModule } from './work-messages/work-messages.module';
 import { SupervisorTopicsModule } from './supervisor-topics/supervisor-topics.module';
 import { ReviewCriteriaModule } from './review-criteria/review-criteria.module';
 import { InfoModule } from './info/info.module';
+import { FaqModule } from './faq/faq.module';
 
 @Module({
   imports: [
@@ -39,6 +40,7 @@ import { InfoModule } from './info/info.module';
     SupervisorTopicsModule,
     ReviewCriteriaModule,
     InfoModule,
+    FaqModule,
   ],
 })
 export class AppModule {}

@@ -11,7 +11,17 @@ export interface InfoPostWithAuthor extends InfoPost {
 export class InfoService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async create(authorId: string, dto: CreateInfoPostDto): Promise<InfoPostWithAuthor> {
+  async create(
+    authorId: string,
+    authorRole: Role,
+    dto: CreateInfoPostDto,
+  ): Promise<InfoPostWithAuthor> {
+    if (authorRole !== Role.SUPERVISOR && authorRole !== Role.ADMIN) {
+      throw new ForbiddenException(
+        'Информацию могут добавлять только преподаватели и администраторы',
+      );
+    }
+
     return this.prisma.infoPost.create({
       data: {
         title: dto.title,

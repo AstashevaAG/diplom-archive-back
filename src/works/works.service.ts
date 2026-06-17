@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import { Role, User, WorkStatus, WorkStage, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma';
@@ -16,6 +17,7 @@ import {
   StatusFilter,
 } from './dto';
 import { PaginatedResult, WorkWithRelations } from './interfaces';
+import { normalizeFileNameEncoding } from '../files/file-name.utils';
 
 const workInclude = {
   author: { select: { id: true, fullName: true, email: true } },
@@ -36,6 +38,28 @@ const workInclude = {
   _count: { select: { reviews: true, comments: true } },
 } satisfies Prisma.WorkInclude;
 
+const WORK_STATUS_FLOW: WorkStatus[] = [
+  WorkStatus.TOPIC_SELECTED,
+  WorkStatus.APPROVED,
+  WorkStatus.IN_PROGRESS,
+  WorkStatus.REVIEW,
+  WorkStatus.NEEDS_REVISION,
+  WorkStatus.DEFENSE,
+  WorkStatus.PUBLISHED,
+];
+
+const ALLOWED_STATUS_TRANSITIONS: Partial<Record<WorkStatus, WorkStatus[]>> = {
+  [WorkStatus.DRAFT]: [WorkStatus.TOPIC_SELECTED],
+  [WorkStatus.TOPIC_SELECTED]: [WorkStatus.APPROVED],
+  [WorkStatus.APPROVED]: [WorkStatus.IN_PROGRESS],
+  [WorkStatus.IN_PROGRESS]: [WorkStatus.REVIEW],
+  [WorkStatus.REVIEW]: [WorkStatus.NEEDS_REVISION, WorkStatus.DEFENSE],
+  [WorkStatus.NEEDS_REVISION]: [WorkStatus.REVIEW],
+  [WorkStatus.DEFENSE]: [WorkStatus.PUBLISHED],
+  [WorkStatus.PUBLISHED]: [],
+  [WorkStatus.ARCHIVED]: [],
+};
+
 @Injectable()
 export class WorksService {
   constructor(
@@ -43,9 +67,13 @@ export class WorksService {
     private readonly notifications: NotificationsService,
   ) {}
 
-  private canManageWork(work: { supervisorId: string | null }, user: User): boolean {
+  private canManageWork(
+    work: { authorId: string; supervisorId: string | null },
+    user: User,
+  ): boolean {
     return (
       user.role === Role.ADMIN ||
+      work.authorId === user.id ||
       (user.role === Role.SUPERVISOR && work.supervisorId === user.id)
     );
   }
@@ -54,6 +82,24 @@ export class WorksService {
     dto: CreateWorkDto,
     authorId: string,
   ): Promise<WorkWithRelations> {
+    if (!dto.supervisorId) {
+      throw new BadRequestException('Выберите преподавателя');
+    }
+
+    const supervisor = await this.prisma.user.findUnique({
+      where: { id: dto.supervisorId },
+      select: { id: true, fullName: true, role: true },
+    });
+
+    if (!supervisor || supervisor.role !== Role.SUPERVISOR) {
+      throw new BadRequestException('Указанный преподаватель не найден');
+    }
+
+    const author = await this.prisma.user.findUnique({
+      where: { id: authorId },
+      select: { fullName: true, group: true },
+    });
+
     const work = await this.prisma.work.create({
       data: {
         title: dto.title,
@@ -62,6 +108,7 @@ export class WorksService {
         category: dto.category,
         tags: dto.tags ?? [],
         year: dto.year,
+        status: WorkStatus.TOPIC_SELECTED,
         authorId,
         supervisorId: dto.supervisorId,
       },
@@ -70,19 +117,33 @@ export class WorksService {
 
     // Create default stages
     const stages = [
-      'Выбор темы',
-      'Утверждение',
-      'Черновик',
-      'Рецензия',
-      'Защита',
-      'Публикация',
+      'Тема выбрана',
+      'Тема утверждена',
+      'Работа в процессе написания',
+      'Финальная проверка',
+      'Требуются доработки',
+      'Допущена к защите',
+      'Работа завершена',
     ];
 
     await this.prisma.workStage.createMany({
       data: stages.map((name) => ({ name, workId: work.id })),
     });
 
-    return work as WorkWithRelations;
+    await this.notifications.create({
+      userId: supervisor.id,
+      type: 'WORK_SUPERVISION_REQUEST',
+      title: 'Новый запрос на руководство',
+      message: `Студент ${author?.fullName ?? 'Неизвестный'} хочет выполнять работу «${work.title}» под вашим руководством.`,
+      data: {
+        workId: work.id,
+        studentId: authorId,
+        studentName: author?.fullName ?? '',
+        studentGroup: author?.group ?? '',
+      },
+    });
+
+    return this.normalizeWorkFileNames(work as WorkWithRelations);
   }
 
   async findAll(
@@ -110,8 +171,10 @@ export class WorksService {
     if (query.status) where.status = query.status;
     if (query.minScore !== undefined || query.maxScore !== undefined) {
       where.commissionReviewScore = {};
-      if (query.minScore !== undefined) where.commissionReviewScore.gte = query.minScore;
-      if (query.maxScore !== undefined) where.commissionReviewScore.lte = query.maxScore;
+      if (query.minScore !== undefined)
+        where.commissionReviewScore.gte = query.minScore;
+      if (query.maxScore !== undefined)
+        where.commissionReviewScore.lte = query.maxScore;
     }
 
     let orderBy: Prisma.WorkOrderByWithRelationInput;
@@ -136,7 +199,9 @@ export class WorksService {
     } satisfies Prisma.WorkInclude;
 
     const includeToUse =
-      statusFilter === StatusFilter.IN_PROGRESS ? inProgressInclude : workInclude;
+      statusFilter === StatusFilter.IN_PROGRESS
+        ? inProgressInclude
+        : workInclude;
 
     const [data, total] = await Promise.all([
       this.prisma.work.findMany({
@@ -150,7 +215,9 @@ export class WorksService {
     ]);
 
     return {
-      data: data as WorkWithRelations[],
+      data: (data as WorkWithRelations[]).map((work) =>
+        this.normalizeWorkFileNames(work),
+      ),
       total,
       page,
       limit,
@@ -181,7 +248,9 @@ export class WorksService {
     ]);
 
     return {
-      data: data as WorkWithRelations[],
+      data: (data as WorkWithRelations[]).map((work) =>
+        this.normalizeWorkFileNames(work),
+      ),
       total,
       page,
       limit,
@@ -205,7 +274,7 @@ export class WorksService {
       data: { viewCount: { increment: 1 } },
     });
 
-    return work as WorkWithRelations;
+    return this.normalizeWorkFileNames(work as WorkWithRelations);
   }
 
   async findByAuthor(authorId: string): Promise<WorkWithRelations[]> {
@@ -214,7 +283,9 @@ export class WorksService {
       include: workInclude,
       orderBy: { createdAt: 'desc' },
     });
-    return works as WorkWithRelations[];
+    return (works as WorkWithRelations[]).map((work) =>
+      this.normalizeWorkFileNames(work),
+    );
   }
 
   async findBySupervisor(supervisorId: string): Promise<WorkWithRelations[]> {
@@ -223,7 +294,9 @@ export class WorksService {
       include: workInclude,
       orderBy: { createdAt: 'desc' },
     });
-    return works as WorkWithRelations[];
+    return (works as WorkWithRelations[]).map((work) =>
+      this.normalizeWorkFileNames(work),
+    );
   }
 
   async update(
@@ -246,7 +319,7 @@ export class WorksService {
       include: workInclude,
     });
 
-    return updated as WorkWithRelations;
+    return this.normalizeWorkFileNames(updated as WorkWithRelations);
   }
 
   async updateStatus(
@@ -261,6 +334,22 @@ export class WorksService {
 
     if (work.supervisorId !== user.id) {
       throw new ForbiddenException('Нет прав для изменения статуса');
+    }
+
+    if (dto.status === work.status) {
+      return this.normalizeWorkFileNames(
+        (await this.prisma.work.findUnique({
+          where: { id },
+          include: workInclude,
+        })) as WorkWithRelations,
+      );
+    }
+
+    const allowedNextStatuses = ALLOWED_STATUS_TRANSITIONS[work.status] ?? [];
+    if (!allowedNextStatuses.includes(dto.status)) {
+      throw new BadRequestException(
+        'Недопустимый переход статуса для текущего этапа работы',
+      );
     }
 
     const updateData: Prisma.WorkUpdateInput = { status: dto.status };
@@ -285,11 +374,21 @@ export class WorksService {
       user,
     );
 
-    return updated as WorkWithRelations;
+    return this.normalizeWorkFileNames(updated as WorkWithRelations);
   }
 
   async delete(id: string, user: User): Promise<void> {
-    const work = await this.prisma.work.findUnique({ where: { id } });
+    const work = await this.prisma.work.findUnique({
+      where: { id },
+      include: {
+        topicResponse: {
+          select: {
+            id: true,
+            topicId: true,
+          },
+        },
+      },
+    });
     if (!work) {
       throw new NotFoundException('Работа не найдена');
     }
@@ -298,7 +397,15 @@ export class WorksService {
       throw new ForbiddenException('Нет прав для удаления');
     }
 
-    await this.prisma.work.delete({ where: { id } });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.work.delete({ where: { id } });
+
+      if (work.topicResponse?.topicId) {
+        await tx.supervisorTopic.delete({
+          where: { id: work.topicResponse.topicId },
+        });
+      }
+    });
   }
 
   async getStages(workId: string): Promise<WorkStage[]> {
@@ -325,15 +432,13 @@ export class WorksService {
     }
 
     if (work.status === WorkStatus.PUBLISHED) {
-      throw new ForbiddenException('Этапы опубликованной работы нельзя изменять');
+      throw new ForbiddenException(
+        'Этапы опубликованной работы нельзя изменять',
+      );
     }
 
-    if (
-      work.authorId !== user.id &&
-      work.supervisorId !== user.id &&
-      user.role !== Role.ADMIN
-    ) {
-      throw new ForbiddenException('Нет прав для изменения этапов');
+    if (work.supervisorId !== user.id && user.role !== Role.ADMIN) {
+      throw new ForbiddenException('Этапы может изменять только преподаватель');
     }
 
     const stage = await this.prisma.workStage.findUnique({
@@ -371,9 +476,7 @@ export class WorksService {
     if (recipients.size === 0) return;
 
     const isPublished = status === WorkStatus.PUBLISHED;
-    const title = isPublished
-      ? 'Работа опубликована'
-      : 'Изменён статус ВКР';
+    const title = isPublished ? 'Работа опубликована' : 'Изменён статус ВКР';
     const message = isPublished
       ? `Работа «${work.title}» опубликована в каталоге.`
       : `Статус работы «${work.title}» изменён на ${status}.`;
@@ -394,5 +497,21 @@ export class WorksService {
         }),
       ),
     );
+  }
+
+  static getStatusFlow(): WorkStatus[] {
+    return WORK_STATUS_FLOW;
+  }
+
+  private normalizeWorkFileNames(work: WorkWithRelations): WorkWithRelations {
+    if (!Array.isArray(work.files)) return work;
+
+    return {
+      ...work,
+      files: work.files.map((file) => ({
+        ...file,
+        originalName: normalizeFileNameEncoding(file.originalName),
+      })),
+    };
   }
 }

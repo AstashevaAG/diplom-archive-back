@@ -28,7 +28,7 @@ export class AnalyticsController {
 
   @Get('supervisors')
   @Roles(Role.ADMIN)
-  @ApiOperation({ summary: 'Статистика по руководителям' })
+  @ApiOperation({ summary: 'Статистика по преподавателям' })
   async getSupervisorStats(): Promise<SupervisorStats[]> {
     return this.analyticsService.getSupervisorStats();
   }

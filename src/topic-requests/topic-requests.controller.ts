@@ -37,7 +37,7 @@ export class TopicRequestsController {
   }
 
   @Get('inbox')
-  @ApiOperation({ summary: 'Входящие заявки (руководитель)' })
+  @ApiOperation({ summary: 'Входящие заявки (преподаватель)' })
   async findInbox(@CurrentUser() user: User): Promise<TopicRequest[]> {
     return this.topicRequestsService.findBySupervisor(user.id);
   }

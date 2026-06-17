@@ -31,7 +31,7 @@ export class TopicRequestsService {
     });
 
     if (!supervisor || supervisor.role !== Role.SUPERVISOR) {
-      throw new BadRequestException('Указанный руководитель не найден');
+      throw new BadRequestException('Указанный преподаватель не найден');
     }
 
     const existing = await this.prisma.topicRequest.findFirst({
@@ -44,7 +44,7 @@ export class TopicRequestsService {
 
     if (existing) {
       throw new BadRequestException(
-        'У вас уже есть ожидающая заявка к этому руководителю',
+        'У вас уже есть ожидающая заявка к этому преподавателю',
       );
     }
 
@@ -142,12 +142,13 @@ export class TopicRequestsService {
     });
 
     const stages = [
-      'Выбор темы',
-      'Утверждение темы',
-      'Сбор материала и написание чернового варианта',
-      'Рецензирование руководителем',
-      'Подготовка к защите',
-      'Защита',
+      'Тема выбрана',
+      'Тема утверждена',
+      'Работа в процессе написания',
+      'Финальная проверка',
+      'Требуются доработки',
+      'Допущена к защите',
+      'Работа завершена',
     ];
 
     const work = await this.prisma.work.create({
@@ -173,7 +174,7 @@ export class TopicRequestsService {
       userId: request.studentId,
       type: 'TOPIC_REQUEST_APPROVED',
       title: 'Заявка на тему одобрена',
-      message: `Руководитель ${request.supervisor.fullName} утвердил вашу тему: «${request.proposedTopic}». Работа создана и готова к выполнению.`,
+      message: `Преподаватель ${request.supervisor.fullName} утвердил вашу тему: «${request.proposedTopic}». Работа создана и готова к выполнению.`,
       data: {
         requestId,
         workId: work.id,
@@ -221,7 +222,7 @@ export class TopicRequestsService {
       userId: request.studentId,
       type: 'TOPIC_REQUEST_REJECTED',
       title: 'Заявка на тему отклонена',
-      message: `Руководитель ${request.supervisor.fullName} отклонил вашу тему: «${request.proposedTopic}».${reasonText}`,
+      message: `Преподаватель ${request.supervisor.fullName} отклонил вашу тему: «${request.proposedTopic}».${reasonText}`,
       data: {
         requestId,
         supervisorName: request.supervisor.fullName,

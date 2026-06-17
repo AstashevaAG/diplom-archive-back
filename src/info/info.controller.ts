@@ -31,7 +31,7 @@ export class InfoController {
     @Body() dto: CreateInfoPostDto,
     @CurrentUser() user: User,
   ): Promise<InfoPostWithAuthor> {
-    return this.infoService.create(user.id, dto);
+    return this.infoService.create(user.id, user.role, dto);
   }
 
   @Get()

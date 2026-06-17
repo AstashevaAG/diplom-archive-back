@@ -6,6 +6,7 @@ import {
 import { WorkMessage } from '@prisma/client';
 import { PrismaService } from '../prisma';
 import { NotificationsService } from '../notifications/notifications.service';
+import { normalizeFileNameEncoding } from '../files/file-name.utils';
 
 export interface WorkMessageWithAuthor extends WorkMessage {
   author: { id: string; fullName: string; avatarUrl: string | null };
@@ -80,6 +81,8 @@ export class WorkMessagesService {
       },
     })) as WorkMessageWithAuthor;
 
+    const normalizedMessage = this.normalizeMessageFileName(message);
+
     const recipientId =
       authorId === work.authorId ? work.supervisorId : work.authorId;
     if (recipientId) {
@@ -96,7 +99,7 @@ export class WorkMessagesService {
       });
     }
 
-    return message;
+    return normalizedMessage;
   }
 
   async getMessages(
@@ -110,7 +113,7 @@ export class WorkMessagesService {
       throw new ForbiddenException('Нет доступа к сообщениям');
     }
 
-    return this.prisma.workMessage.findMany({
+    const messages = (await this.prisma.workMessage.findMany({
       where: { workId },
       include: {
         author: { select: { id: true, fullName: true, avatarUrl: true } },
@@ -128,6 +131,22 @@ export class WorkMessagesService {
         },
       },
       orderBy: { createdAt: 'asc' },
-    }) as Promise<WorkMessageWithAuthor[]>;
+    })) as WorkMessageWithAuthor[];
+
+    return messages.map((message) => this.normalizeMessageFileName(message));
+  }
+
+  private normalizeMessageFileName(
+    message: WorkMessageWithAuthor,
+  ): WorkMessageWithAuthor {
+    if (!message.file) return message;
+
+    return {
+      ...message,
+      file: {
+        ...message.file,
+        originalName: normalizeFileNameEncoding(message.file.originalName),
+      },
+    };
   }
 }

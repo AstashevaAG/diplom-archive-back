@@ -21,6 +21,7 @@ enum WorkStatus {
   APPROVED
   IN_PROGRESS
   REVIEW
+  NEEDS_REVISION
   DEFENSE
   PUBLISHED
   ARCHIVED
@@ -83,6 +84,7 @@ model User {
   supervisorTopics           SupervisorTopic[]     @relation("SupervisorTopics")
   topicResponses             TopicResponse[]       @relation("StudentTopicResponses")
   infoPosts                  InfoPost[]            @relation("InfoPostAuthor")
+  faqItems                   FaqItem[]             @relation("FaqItemAuthor")
 
   @@map("users")
 }
@@ -114,6 +116,8 @@ model Work {
   comments Comment[]
   stages   WorkStage[]
   messages WorkMessage[]
+  topicResponseId String?        @unique
+  topicResponse   TopicResponse? @relation("AcceptedTopicResponse", fields: [topicResponseId], references: [id], onDelete: SetNull)
 
   @@map("works")
 }
@@ -291,6 +295,21 @@ model InfoPost {
   @@map("info_posts")
 }
 
+model FaqItem {
+  id         String   @id @default(uuid())
+  question   String
+  answer     String   @db.Text
+  orderIndex Int      @default(0)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  authorId String
+  author   User   @relation("FaqItemAuthor", fields: [authorId], references: [id])
+
+  @@map("faq_items")
+}
+
 model TopicResponse {
   id        String              @id @default(uuid())
   message   String?             @db.Text
@@ -304,6 +323,7 @@ model TopicResponse {
   topic     SupervisorTopic @relation(fields: [topicId], references: [id], onDelete: Cascade)
 
   messages TopicResponseMessage[]
+  work     Work?                  @relation("AcceptedTopicResponse")
 
   @@unique([studentId, topicId])
   @@map("topic_responses")

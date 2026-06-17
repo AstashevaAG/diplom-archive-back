@@ -20,6 +20,14 @@ export interface DashboardData {
   totalWorks: number;
   totalUsers: number;
   totalSupervisors: number;
+  studentsWithoutWorks: number;
   avgQualityScore: number;
   recentWorks: number;
+  statusRows: { status: string; count: number }[];
+  studentsWithoutWorkRows: {
+    id: string;
+    fullName: string;
+    email: string;
+    group: string | null;
+  }[];
 }

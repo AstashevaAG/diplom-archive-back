@@ -16,15 +16,21 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiConsumes } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiConsumes,
+} from '@nestjs/swagger';
 import { Response } from 'express';
-import { User, Role } from '@prisma/client';
+import { User, WorkStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards';
 import { CurrentUser } from '../auth/decorators';
 import { FilesService } from './files.service';
 import type { FileVersionCompareResult } from './files.service';
 import { PrismaService } from '../prisma';
 import { File as PrismaFile } from '@prisma/client';
+import { buildInlineContentDisposition } from './file-name.utils';
 
 @ApiTags('Files')
 @Controller('files')
@@ -43,6 +49,7 @@ export class FilesController {
   async uploadFile(
     @Param('workId') workId: string,
     @Body('comment') comment: string | undefined,
+    @Body('indexForSearch') indexForSearch: string | undefined,
     @UploadedFile() file: Express.Multer.File | undefined,
     @CurrentUser() user: User,
   ): Promise<PrismaFile> {
@@ -51,14 +58,25 @@ export class FilesController {
     }
     const work = await this.prisma.work.findUnique({ where: { id: workId } });
     if (!work) throw new BadRequestException('Работа не найдена');
-    if (
-      work.authorId !== user.id &&
-      work.supervisorId !== user.id &&
-      user.role !== Role.ADMIN
-    ) {
-      throw new ForbiddenException('Только участники работы могут загружать файлы');
+    if (work.authorId !== user.id && work.supervisorId !== user.id) {
+      throw new ForbiddenException(
+        'Только участники работы могут загружать файлы',
+      );
     }
-    return this.filesService.uploadFile(workId, file, user, comment);
+    const uploadLockedStatuses: WorkStatus[] = [
+      WorkStatus.REVIEW,
+      WorkStatus.DEFENSE,
+      WorkStatus.PUBLISHED,
+      WorkStatus.ARCHIVED,
+    ];
+    if (uploadLockedStatuses.includes(work.status)) {
+      throw new ForbiddenException(
+        'Загрузка файлов недоступна на текущем статусе работы',
+      );
+    }
+    return this.filesService.uploadFile(workId, file, user, comment, {
+      indexForSearch: indexForSearch === 'true',
+    });
   }
 
   @Get('works/:workId/versions')
@@ -82,20 +100,22 @@ export class FilesController {
     @Query('to') toFileId: string,
     @CurrentUser() user: User,
   ): Promise<FileVersionCompareResult> {
-    return this.filesService.compareVersions(workId, fromFileId, toFileId, user);
+    return this.filesService.compareVersions(
+      workId,
+      fromFileId,
+      toFileId,
+      user,
+    );
   }
 
   @Get(':id')
   @ApiOperation({ summary: 'Скачать/просмотреть файл' })
-  async getFile(
-    @Param('id') id: string,
-    @Res() res: Response,
-  ): Promise<void> {
+  async getFile(@Param('id') id: string, @Res() res: Response): Promise<void> {
     const fileData = await this.filesService.getFile(id);
     res.setHeader('Content-Type', fileData.mimeType);
     res.setHeader(
       'Content-Disposition',
-      `inline; filename="${encodeURIComponent(fileData.originalName)}"`,
+      buildInlineContentDisposition(fileData.originalName),
     );
     res.sendFile(fileData.path);
   }

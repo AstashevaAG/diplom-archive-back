@@ -1,9 +1,10 @@
 import {
+  BadRequestException,
   Injectable,
   NotFoundException,
   ForbiddenException,
 } from '@nestjs/common';
-import { Review } from '@prisma/client';
+import { Review, WorkStatus } from '@prisma/client';
 import { PrismaService } from '../prisma';
 import { CreateReviewDto, UpdateReviewDto } from './dto';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -27,6 +28,7 @@ export class ReviewsService {
         title: true,
         authorId: true,
         supervisorId: true,
+        status: true,
       },
     });
     if (!work) {
@@ -35,6 +37,11 @@ export class ReviewsService {
 
     const totalScore = this.calculateScore(dto.criteria, dto.weights);
     const isCommissionReview = work.supervisorId === reviewerId;
+    if (isCommissionReview && work.status !== WorkStatus.DEFENSE) {
+      throw new BadRequestException(
+        'Оценку преподавателя можно выставить только после допуска к защите',
+      );
+    }
 
     const review = await this.prisma.review.create({
       data: {
@@ -85,6 +92,9 @@ export class ReviewsService {
   ): Promise<Review> {
     const review = await this.prisma.review.findUnique({
       where: { id: reviewId },
+      include: {
+        work: { select: { supervisorId: true, status: true } },
+      },
     });
 
     if (!review) {
@@ -93,6 +103,14 @@ export class ReviewsService {
 
     if (review.reviewerId !== reviewerId) {
       throw new ForbiddenException('Нет прав для редактирования');
+    }
+    if (
+      review.work.supervisorId === reviewerId &&
+      review.work.status !== WorkStatus.DEFENSE
+    ) {
+      throw new BadRequestException(
+        'Оценку преподавателя можно редактировать только на этапе допуска к защите',
+      );
     }
 
     const criteria = (dto.criteria ?? review.criteria) as Record<string, number>;
@@ -117,6 +135,9 @@ export class ReviewsService {
   async finalize(reviewId: string, reviewerId: string): Promise<Review> {
     const review = await this.prisma.review.findUnique({
       where: { id: reviewId },
+      include: {
+        work: { select: { supervisorId: true, status: true } },
+      },
     });
 
     if (!review) {
@@ -125,6 +146,14 @@ export class ReviewsService {
 
     if (review.reviewerId !== reviewerId) {
       throw new ForbiddenException('Нет прав для финализации');
+    }
+    if (
+      review.work.supervisorId === reviewerId &&
+      review.work.status !== WorkStatus.DEFENSE
+    ) {
+      throw new BadRequestException(
+        'Оценку преподавателя можно финализировать только на этапе допуска к защите',
+      );
     }
 
     return this.prisma.review.update({

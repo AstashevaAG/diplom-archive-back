@@ -40,7 +40,7 @@ export class UsersController {
   }
 
   @Get('supervisors')
-  @ApiOperation({ summary: 'Каталог научных руководителей' })
+  @ApiOperation({ summary: 'Каталог преподавателей' })
   async getSupervisors(): Promise<SafeUser[]> {
     return this.usersService.findSupervisors();
   }
